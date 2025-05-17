@@ -44,6 +44,34 @@ st.markdown("""
         color: white !important;
     }
     
+    /* Make input fields and dropdowns more visible */
+    .stTextInput input, .stSelectbox > div > div {
+        border: 1px solid #CCCCCC !important;
+        background-color: #FFFFFF !important;
+        border-radius: 4px !important;
+        padding: 8px 12px !important;
+    }
+    
+    .stTextInput input:focus, .stSelectbox > div > div:focus {
+        border-color: #4CACE5 !important;
+        box-shadow: 0 0 0 1px #4CACE5 !important;
+    }
+    
+    /* Style buttons */
+    .stButton button {
+        background-color: #4CACE5 !important;
+        color: white !important;
+        border: none !important;
+        padding: 0.5rem 1rem !important;
+        font-weight: 600 !important;
+        transition: all 0.2s !important;
+    }
+    
+    .stButton button:hover {
+        background-color: #3d8bc9 !important;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1) !important;
+    }
+    
     /* Remove white space after Analyze a Job */
     [data-testid="stVerticalBlock"] {
         gap: 0 !important;
@@ -220,6 +248,12 @@ with tabs[0]:  # Single Job Analysis tab
         # Add a button to analyze the custom job
         analyze_custom = st.button("Analyze Custom Job", type="primary")
     
+    # Add a Clear Entries button
+    if st.button("Clear Entries", type="secondary"):
+        # This will trigger a rerun with empty values
+        st.session_state.clear()
+        st.rerun()
+    
     # Determine which job to analyze
     job_to_analyze = None
     if analyze_selected:
@@ -325,6 +359,236 @@ with tabs[0]:  # Single Job Analysis tab
             st.markdown("<h3 style='color: #0084FF;'>Analysis</h3>", unsafe_allow_html=True)
             st.markdown(job_data.get('analysis', 'No analysis available.'))
             
+            # Skills Impact Spider Diagram
+            st.markdown("<h2 style='color: #0084FF;'>Skills Impact Analysis</h2>", unsafe_allow_html=True)
+            
+            # Create radar chart data
+            radar_categories = ['Technical Skills', 'Creative Thinking', 'Human Interaction', 
+                               'Complex Decision Making', 'Physical Skills', 'Specialized Knowledge']
+            
+            # Determine radar values based on job category and risk level
+            job_category = job_data.get('job_category', 'general')
+            
+            if job_category == 'technical':
+                radar_values = [40, 85, 60, 90, 30, 75]  # Technical jobs need creativity and complex decisions
+            elif job_category == 'healthcare':
+                radar_values = [60, 65, 95, 80, 85, 90]  # Healthcare needs human interaction and specialized knowledge
+            elif job_category == 'transportation':
+                radar_values = [50, 40, 75, 70, 90, 65]  # Transportation needs physical skills
+            elif job_category == 'education':
+                radar_values = [50, 80, 95, 75, 50, 80]  # Education needs human interaction and creativity
+            elif job_category == 'finance':
+                radar_values = [75, 65, 70, 90, 20, 85]  # Finance needs complex decisions
+            else:
+                # Default balanced values
+                radar_values = [65, 70, 75, 75, 60, 70]
+            
+            # Adjust values based on risk level
+            year_5_risk = job_data.get('year_5_risk', 0)
+            if year_5_risk > 60:
+                # High risk jobs have lower values across the board
+                radar_values = [max(20, v - 30) for v in radar_values]
+            elif year_5_risk < 25:
+                # Low risk jobs have higher values
+                radar_values = [min(95, v + 10) for v in radar_values]
+            
+            # Create radar chart
+            fig = go.Figure()
+            
+            fig.add_trace(go.Scatterpolar(
+                r=radar_values,
+                theta=radar_categories,
+                fill='toself',
+                fillcolor='rgba(0, 132, 255, 0.2)',
+                line=dict(color='#0084FF', width=2),
+                name='AI-Resistant Skills'
+            ))
+            
+            fig.update_layout(
+                polar=dict(
+                    radialaxis=dict(
+                        visible=True,
+                        range=[0, 100]
+                    )
+                ),
+                showlegend=False,
+                height=400,
+                margin=dict(l=80, r=80, t=20, b=20),
+                paper_bgcolor='#FFFFFF'
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            st.markdown("""
+                <div style='background-color: #F0F7FF; padding: 15px; border-radius: 5px; margin-bottom: 20px;'>
+                    <p><strong>What this chart means:</strong> The spider diagram shows which skill areas are most protected from AI displacement in this role. 
+                    Higher values (further from center) indicate skills that AI will have difficulty replacing.</p>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            # Get skill recommendations
+            job_cat = job_data.get('job_category', 'general')
+            
+            if avg_risk >= 70:
+                risk_level = "Very High"
+            elif avg_risk >= 50:
+                risk_level = "High"
+            elif avg_risk >= 30:
+                risk_level = "Moderate"
+            else:
+                risk_level = "Low"
+                
+            # Display skill recommendations
+            st.markdown("<h2 style='color: #0084FF;'>Key Skills to Develop</h2>", unsafe_allow_html=True)
+            
+            # Create three columns for different skill types
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown("<h3 style='color: #333333;'>Technical Skills</h3>", unsafe_allow_html=True)
+                if job_cat == 'technical':
+                    skills = [
+                        "Advanced problem-solving",
+                        "Systems thinking",
+                        "High-level design",
+                        "Cross-functional collaboration"
+                    ]
+                elif job_cat == 'healthcare':
+                    skills = [
+                        "Advanced patient care",
+                        "Specialized clinical expertise",
+                        "Integrated care management",
+                        "Health tech integration"
+                    ]
+                elif job_cat == 'education':
+                    skills = [
+                        "Curriculum development",
+                        "Personalized learning design",
+                        "Educational technology integration",
+                        "Adaptive learning systems"
+                    ]
+                elif job_cat == 'finance':
+                    skills = [
+                        "Complex financial analysis",
+                        "Risk assessment expertise",
+                        "Strategic financial planning",
+                        "Fintech integration"
+                    ]
+                elif job_cat == 'transportation':
+                    skills = [
+                        "Complex logistics planning",
+                        "Transportation systems knowledge",
+                        "Route optimization",
+                        "Emergency response"
+                    ]
+                else:
+                    skills = [
+                        "Complex problem solving",
+                        "Critical thinking",
+                        "Systems thinking",
+                        "Digital tool mastery"
+                    ]
+                
+                for skill in skills:
+                    st.markdown(f"• {skill}")
+            
+            with col2:
+                st.markdown("<h3 style='color: #333333;'>Human Skills</h3>", unsafe_allow_html=True)
+                
+                if job_cat == 'technical':
+                    skills = [
+                        "Creative thinking",
+                        "Interpersonal communication",
+                        "Leadership and mentoring",
+                        "Stakeholder management"
+                    ]
+                elif job_cat == 'healthcare':
+                    skills = [
+                        "Advanced empathy",
+                        "Crisis management",
+                        "Interdisciplinary collaboration",
+                        "Patient advocacy"
+                    ]
+                elif job_cat == 'education':
+                    skills = [
+                        "Emotional intelligence",
+                        "Mentorship and coaching",
+                        "Cultural competence",
+                        "Creative engagement"
+                    ]
+                elif job_cat == 'finance':
+                    skills = [
+                        "Ethical decision making",
+                        "Client relationship management",
+                        "Financial communication",
+                        "Critical thinking"
+                    ]
+                elif job_cat == 'transportation':
+                    skills = [
+                        "Situational awareness",
+                        "Customer service excellence",
+                        "Communication clarity",
+                        "Decision making under pressure"
+                    ]
+                else:
+                    skills = [
+                        "Adaptability",
+                        "Creativity",
+                        "Communication excellence",
+                        "Emotional intelligence"
+                    ]
+                
+                for skill in skills:
+                    st.markdown(f"• {skill}")
+            
+            with col3:
+                st.markdown("<h3 style='color: #333333;'>Future-Ready Skills</h3>", unsafe_allow_html=True)
+                
+                if job_cat == 'technical':
+                    skills = [
+                        "AI/ML ethics",
+                        "Human-AI collaboration",
+                        "Novel use-case development",
+                        "Algorithm auditing"
+                    ]
+                elif job_cat == 'healthcare':
+                    skills = [
+                        "AI-assisted diagnostics",
+                        "Health tech integration",
+                        "AI output verification",
+                        "AI-human collaborative care"
+                    ]
+                elif job_cat == 'education':
+                    skills = [
+                        "AI-enhanced teaching methods",
+                        "Educational technology integration",
+                        "Adaptive learning system design",
+                        "Digital pedagogy"
+                    ]
+                elif job_cat == 'finance':
+                    skills = [
+                        "Fintech integration",
+                        "Algorithmic trading oversight",
+                        "Automated financial systems",
+                        "AI-assisted financial planning"
+                    ]
+                elif job_cat == 'transportation':
+                    skills = [
+                        "Autonomous vehicle supervision",
+                        "Smart transportation systems",
+                        "Advanced telemetry analytics",
+                        "Transportation technology integration"
+                    ]
+                else:
+                    skills = [
+                        "AI literacy",
+                        "Technology adaptation",
+                        "Human-AI collaboration",
+                        "New technology integration"
+                    ]
+                
+                for skill in skills:
+                    st.markdown(f"• {skill}")
+            
             # Timeline visualization
             st.markdown("<h2 style='color: #0084FF;'>Risk Progression Timeline</h2>", unsafe_allow_html=True)
             
@@ -382,10 +646,10 @@ with tabs[0]:  # Single Job Analysis tab
                 <div style="background-color: #F0F7FF; padding: 20px; border-radius: 10px; text-align: center;">
                 <h3 style="margin-top: 0; color: #0084FF;">Career Transition Package</h3>
                 <p>Get a personalized plan tailored to your specific situation.</p>
-                <a href="https://form.jotform.com/240636561351150" target="_blank" 
+                <a href="https://form.jotform.com/251137815706154" target="_blank" 
                 style="display: inline-block; background-color: #4CACE5; color: white; padding: 10px 20px; 
                 text-decoration: none; font-weight: bold; border-radius: 5px; margin-top: 10px;">
-                Get Your Career Transition Package Now!</a>
+                Start your personalized Career Navigator package today!</a>
                 </div>
                 """, unsafe_allow_html=True)
 
