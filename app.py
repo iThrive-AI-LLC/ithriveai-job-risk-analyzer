@@ -12,13 +12,12 @@ st.set_page_config(
     initial_sidebar_state="collapsed"  # Start with sidebar collapsed for faster load
 )
 
-# Custom CSS to make the app black background with blue accents
+# Custom CSS for light theme matching the godaddy button page
 st.markdown("""
 <style>
     /* Main app background */
     .stApp {
-        background-color: #1E1E1E;
-        color: #FFFFFF;
+        background-color: #FFFFFF;
     }
     
     /* Headers */
@@ -29,63 +28,27 @@ st.markdown("""
     /* Tabs */
     .stTabs [data-baseweb="tab-list"] {
         gap: 2px;
-        background-color: #1E1E1E;
+        background-color: #F8FBFF;
     }
     
     .stTabs [data-baseweb="tab"] {
         height: 50px;
-        background-color: #2D2D2D;
+        background-color: #F0F7FF;
         border-radius: 4px 4px 0 0;
-        color: white;
+        color: #333333;
         padding: 10px 20px;
     }
     
     .stTabs [aria-selected="true"] {
-        background-color: #0084FF !important;
+        background-color: #4CACE5 !important;
         color: white !important;
     }
     
-    /* Inputs */
-    .stTextInput > div > div > input {
-        background-color: #2D2D2D !important;
-        color: white !important;
-    }
-    
-    /* Dropdowns */
-    .stSelectbox > div > div {
-        background-color: #2D2D2D !important;
-    }
-    
-    .stSelectbox > div > div > div {
-        background-color: #2D2D2D !important;
-        color: white !important;
-    }
-    
-    /* Metrics */
-    [data-testid="stMetricValue"] {
-        color: white !important;
-    }
-    
-    [data-testid="stMetricLabel"] {
-        color: #CCCCCC !important;
-    }
-    
-    /* Other elements */
-    .st-cy {
-        background-color: #2D2D2D !important;
-        color: white !important;
-    }
-    
-    .st-bq, .st-bs, .st-bm {
-        color: white !important;
-    }
-    
-    /* Make sure no white box appears */
+    /* Remove white space after Analyze a Job */
     [data-testid="stVerticalBlock"] {
         gap: 0 !important;
     }
     
-    /* Remove the white block after "Analyze a Job" */
     .element-container:empty {
         display: none !important;
     }
@@ -94,12 +57,6 @@ st.markdown("""
     .css-1y0tads, .css-1544g2n {
         padding: 0rem 1rem 1rem;
     }
-    
-    /* Multiselect */
-    .css-k1vhr4, .css-1aqmuqs {
-        background-color: #2D2D2D !important;
-        color: white !important;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -107,8 +64,9 @@ st.markdown("""
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
     st.image("https://img1.wsimg.com/isteam/ip/70686f32-22d2-489c-a383-6fcd793644be/blob-3712e2e.png/:/rs=h:197,cg:true,m/qt=q:95", width=250)
-    st.markdown("<h1 style='text-align: center; color: #0084FF;'>HOW IS YOUR JOB IMPACTED BY AI?</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #CCCCCC;'>Use our AI Job Displacement Risk Analyzer to assess your career outlook over the next 5 years</p>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #0084FF;'>Is your job at risk with AI innovation?</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #4CACE5;'>AI Job Displacement Risk Analyzer</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #666666;'>Discover how AI might impact your career in the next 5 years and get personalized recommendations.</p>", unsafe_allow_html=True)
 
 # Create tabs for single job analysis and comparison
 tabs = st.tabs(["Single Job Analysis", "Job Comparison"])

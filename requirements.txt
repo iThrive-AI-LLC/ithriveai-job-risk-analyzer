@@ -2,8 +2,3 @@ streamlit==1.35.0
 pandas==2.2.1
 plotly==5.20.0
 numpy==1.26.4
-psycopg2-binary==2.9.9
-sqlalchemy==2.0.28
-trafilatura==1.6.1
-beautifulsoup4==4.12.3
-requests==2.31.0
