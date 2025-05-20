@@ -104,6 +104,58 @@ with tabs[0]:  # Single Job Analysis tab
     # Remove that empty space by not having any blank lines or elements here
     
     # Basic job data for common occupations
+    # Job category aliases for better searching
+    JOB_ALIASES = {
+        # Technical aliases
+        'software developer': 'Software Engineer',
+        'web developer': 'Software Engineer',
+        'programmer': 'Software Engineer',
+        'coder': 'Software Engineer',
+        'frontend developer': 'Software Engineer',
+        'backend developer': 'Software Engineer',
+        'full stack developer': 'Software Engineer',
+        'data analyst': 'Data Scientist',
+        'machine learning engineer': 'Data Scientist',
+        'ai engineer': 'Data Scientist',
+        'helpdesk': 'IT Support Specialist',
+        'technical support': 'IT Support Specialist',
+        'devops': 'DevOps Engineer',
+        'sre': 'DevOps Engineer',
+        'site reliability engineer': 'DevOps Engineer',
+        
+        # Transportation aliases
+        'driver': 'Truck Driver',
+        'delivery driver': 'Truck Driver',
+        'cdl driver': 'Truck Driver',
+        'uber driver': 'Rideshare Driver',
+        'lyft driver': 'Rideshare Driver',
+        'cab driver': 'Taxi Driver',
+        'chauffeur': 'Taxi Driver',
+        'pilot': 'Airline Pilot',
+        
+        # Customer service aliases
+        'call center agent': 'Customer Service Representative',
+        'call center representative': 'Customer Service Representative',
+        'support agent': 'Customer Service Representative',
+        'customer support': 'Customer Service Representative',
+        'helpdesk agent': 'Customer Service Representative',
+        
+        # Retail aliases
+        'sales associate': 'Retail Sales Associate',
+        'shop assistant': 'Retail Sales Associate',
+        'store clerk': 'Retail Sales Associate',
+        'cashier': 'Cashier',
+        'checkout operator': 'Cashier',
+        'store manager': 'Retail Store Manager',
+        'shop manager': 'Retail Store Manager',
+        
+        # Sales aliases
+        'account executive': 'Sales Representative',
+        'account manager': 'Sales Representative',
+        'sales agent': 'Sales Representative',
+        'sales consultant': 'Sales Representative',
+    }
+    
     JOB_DATA = {
         # Technical Jobs
         'Software Engineer': {
@@ -333,6 +385,401 @@ with tabs[0]:  # Single Job Analysis tab
                 'Complex treatment planning requires human judgment'
             ],
             'analysis': 'Dentistry has relatively low displacement risk due to the manual dexterity required for procedures, need for patient rapport, and complexity of treatment planning.'
+        },
+        
+        # Customer Service Jobs
+        'Customer Service Representative': {
+            'year_1_risk': 35.0,
+            'year_5_risk': 75.0,
+            'job_category': 'customer_service',
+            'risk_factors': [
+                'AI chatbots are increasingly handling routine customer inquiries',
+                'Natural language processing can understand and respond to common questions',
+                'Self-service portals reduce the need for human representatives',
+                'Voice recognition and synthesis enables AI phone support'
+            ],
+            'protective_factors': [
+                'Complex problem resolution still requires human judgment',
+                'Emotional customers benefit from human empathy',
+                'Unusual cases need human flexibility and creativity'
+            ],
+            'analysis': 'Customer service representatives face high displacement risk, especially for roles handling routine inquiries. Those specializing in complex problem-solving and emotionally charged situations will be more resilient.'
+        },
+        'Call Center Manager': {
+            'year_1_risk': 20.0,
+            'year_5_risk': 45.0,
+            'job_category': 'customer_service',
+            'risk_factors': [
+                'AI-powered workforce management optimizes scheduling',
+                'Automated quality assurance can monitor calls',
+                'Performance metrics can be tracked and analyzed automatically'
+            ],
+            'protective_factors': [
+                'Team leadership and motivation requires human connection',
+                'Complex problem escalation needs human judgment',
+                'Strategic decision-making benefits from human experience'
+            ],
+            'analysis': 'While routine management tasks may be automated, call center managers who excel at team leadership, handling complex escalations, and strategic planning will remain valuable.'
+        },
+        'Technical Support Specialist': {
+            'year_1_risk': 30.0,
+            'year_5_risk': 60.0,
+            'job_category': 'customer_service',
+            'risk_factors': [
+                'Automated diagnostics can identify and fix common issues',
+                'Self-help knowledge bases reduce simple support tickets',
+                'Remote monitoring can preemptively address problems'
+            ],
+            'protective_factors': [
+                'Complex troubleshooting requires technical expertise',
+                'Integration issues need system-wide understanding',
+                'Security concerns benefit from human judgment'
+            ],
+            'analysis': 'Basic technical support faces significant automation, but specialists handling complex issues, especially those involving security or system integration, will remain in demand.'
+        },
+        'Customer Success Manager': {
+            'year_1_risk': 15.0,
+            'year_5_risk': 35.0,
+            'job_category': 'customer_service',
+            'risk_factors': [
+                'Product usage analytics can identify at-risk customers automatically',
+                'Automated onboarding reduces human touch points',
+                'Regular check-ins can be scheduled and tracked by systems'
+            ],
+            'protective_factors': [
+                'Strategic account planning needs human insight',
+                'Relationship building requires human connection',
+                'Complex product adoption strategies need customization'
+            ],
+            'analysis': 'While data collection and basic customer interactions may be automated, customer success managers focused on strategic relationships and complex adoption challenges will remain valuable.'
+        },
+        
+        # Retail Jobs
+        'Retail Sales Associate': {
+            'year_1_risk': 30.0,
+            'year_5_risk': 65.0,
+            'job_category': 'retail',
+            'risk_factors': [
+                'Self-checkout and mobile payments reduce cashier needs',
+                'Online shopping continues to grow vs. in-store shopping',
+                'AI-powered recommendation systems can replace human advice',
+                'Automated inventory management reduces manual tasks'
+            ],
+            'protective_factors': [
+                'Personalized shopping experiences benefit from human touch',
+                'Complex product questions need human product knowledge',
+                'Loss prevention requires human attention and judgment'
+            ],
+            'analysis': 'Retail sales associates face high displacement risk, particularly in stores selling standardized products. Those specializing in complex, high-value items or luxury products will be more resilient.'
+        },
+        'Cashier': {
+            'year_1_risk': 40.0,
+            'year_5_risk': 85.0,
+            'job_category': 'retail',
+            'risk_factors': [
+                'Self-checkout technology is increasingly widespread',
+                'Mobile payment apps allow checkout anywhere in store',
+                'Contactless payment systems reduce human interaction',
+                'Automated fraud detection reduces need for human oversight'
+            ],
+            'protective_factors': [
+                'Complex transactions may require human assistance',
+                'Customer service aspects add value beyond transactions',
+                'Technology troubleshooting often needs human intervention'
+            ],
+            'analysis': 'Cashier roles have very high displacement risk due to self-checkout technology, mobile payments, and automation. This trend will likely accelerate in the next five years.'
+        },
+        'Retail Store Manager': {
+            'year_1_risk': 18.0,
+            'year_5_risk': 40.0,
+            'job_category': 'retail',
+            'risk_factors': [
+                'Inventory management can be automated',
+                'Staff scheduling can be optimized by algorithms',
+                'Performance metrics can be tracked automatically'
+            ],
+            'protective_factors': [
+                'Team leadership requires human motivation and direction',
+                'Customer conflict resolution needs human judgment',
+                'Store strategy and merchandising benefits from human creativity'
+            ],
+            'analysis': 'While administrative aspects of retail management will be increasingly automated, managers who excel at team leadership, customer service, and strategic merchandising will remain essential.'
+        },
+        'Visual Merchandiser': {
+            'year_1_risk': 15.0,
+            'year_5_risk': 35.0,
+            'job_category': 'retail',
+            'risk_factors': [
+                'Digital design tools can propose store layouts',
+                'AR/VR can test merchandise arrangements virtually',
+                'Standard merchandising guidelines can be automated'
+            ],
+            'protective_factors': [
+                'Creative displays require human artistic sense',
+                'Adapting to local customer preferences needs human insight',
+                'Seasonal and trend-based changes benefit from human judgment'
+            ],
+            'analysis': 'Visual merchandisers with strong creative skills and the ability to translate brand identity into compelling physical spaces will remain valuable despite some automation of technical aspects.'
+        },
+        'Inventory Specialist': {
+            'year_1_risk': 35.0,
+            'year_5_risk': 70.0,
+            'job_category': 'retail',
+            'risk_factors': [
+                'RFID and automated scanning systems reduce manual counting',
+                'Predictive analytics can forecast inventory needs',
+                'Automated ordering systems reduce human decision-making',
+                'Warehouse automation reduces human handling'
+            ],
+            'protective_factors': [
+                'Complex supply chain disruptions need human problem-solving',
+                'Special order management benefits from human oversight',
+                'Loss prevention investigations require human judgment'
+            ],
+            'analysis': 'Routine inventory tasks face high automation risk, but roles focused on complex supply chain management, vendor relationships, and loss prevention will evolve rather than disappear.'
+        },
+        
+        # Sales Jobs
+        'Sales Representative': {
+            'year_1_risk': 20.0,
+            'year_5_risk': 45.0,
+            'job_category': 'sales',
+            'risk_factors': [
+                'CRM automation can handle routine follow-ups',
+                'Online purchasing reduces need for human sales in some sectors',
+                'Lead scoring algorithms can prioritize prospects automatically',
+                'Product configurations can be automated'
+            ],
+            'protective_factors': [
+                'Complex solution selling requires human understanding',
+                'Relationship building benefits from human connection',
+                'Negotiation in major deals needs human judgment'
+            ],
+            'analysis': 'Transactional sales roles face significant automation risk, but representatives handling complex B2B sales, consultative selling, and relationship management will remain valuable.'
+        },
+        'Sales Manager': {
+            'year_1_risk': 15.0,
+            'year_5_risk': 35.0,
+            'job_category': 'sales',
+            'risk_factors': [
+                'Sales analytics and forecasting can be automated',
+                'Territory optimization can be handled by algorithms',
+                'Performance tracking can be automated'
+            ],
+            'protective_factors': [
+                'Team motivation and coaching requires human leadership',
+                'Complex sales strategy needs human expertise',
+                'Key account management benefits from human relationships'
+            ],
+            'analysis': 'While data analysis and reporting aspects will be increasingly automated, sales managers who excel at team leadership, strategy development, and managing key relationships will remain essential.'
+        },
+        'Business Development Manager': {
+            'year_1_risk': 10.0,
+            'year_5_risk': 25.0,
+            'job_category': 'sales',
+            'risk_factors': [
+                'Market research can be partially automated',
+                'Initial prospect identification can be algorithm-driven',
+                'Contract generation can be automated'
+            ],
+            'protective_factors': [
+                'Strategic partnership formation requires human judgment',
+                'Complex deal structuring needs human creativity',
+                'Relationship building with executives needs human connection'
+            ],
+            'analysis': 'Business development roles focused on strategic partnerships, complex deal structuring, and executive relationships will remain valuable, though data gathering and analysis will be increasingly automated.'
+        },
+        'Insurance Agent': {
+            'year_1_risk': 25.0,
+            'year_5_risk': 65.0,
+            'job_category': 'sales',
+            'risk_factors': [
+                'Online quote comparison tools reduce need for agents',
+                'Automated underwriting reduces human decision making',
+                'Chatbots can handle routine policy questions',
+                'Direct-to-consumer insurance models are growing'
+            ],
+            'protective_factors': [
+                'Complex coverage needs benefit from human expertise',
+                'Policy bundling and customization needs human judgment',
+                'Claims advocacy is enhanced by human representation'
+            ],
+            'analysis': 'Traditional insurance agents face significant displacement risk, but those specializing in complex coverage needs, high-value clients, and personalized service will be more resilient.'
+        },
+        'Real Estate Agent': {
+            'year_1_risk': 20.0,
+            'year_5_risk': 50.0,
+            'job_category': 'sales',
+            'risk_factors': [
+                'Online listing services reduce agent gatekeeping role',
+                'Virtual tours reduce need for in-person showings',
+                'Automated valuation models inform pricing',
+                'Digital transaction management streamlines process'
+            ],
+            'protective_factors': [
+                'Local market expertise adds human value',
+                'Negotiation in complex deals benefits from human judgment',
+                'Emotional aspects of home buying need human support'
+            ],
+            'analysis': 'While technology is transforming real estate, agents who provide deep local expertise, skilled negotiation, and emotional support during major life decisions will continue to add value.'
+        },
+        
+        # Administrative Jobs
+        'Administrative Assistant': {
+            'year_1_risk': 35.0,
+            'year_5_risk': 75.0,
+            'job_category': 'administrative',
+            'risk_factors': [
+                'Scheduling software can automate calendar management',
+                'Email filtering and management tools reduce manual tasks',
+                'Digital filing systems minimize paper handling',
+                'Virtual meeting platforms streamline coordination'
+            ],
+            'protective_factors': [
+                'Complex coordination across teams needs human judgment',
+                'Confidential information handling benefits from discretion',
+                'Office culture and morale support requires human touch'
+            ],
+            'analysis': 'Traditional administrative assistant roles face high displacement risk, especially for routine tasks. Those who develop expertise in complex coordination, confidential matters, and organizational dynamics will be more resilient.'
+        },
+        'Data Entry Clerk': {
+            'year_1_risk': 50.0,
+            'year_5_risk': 90.0,
+            'job_category': 'administrative',
+            'risk_factors': [
+                'Optical character recognition automates form processing',
+                'Automated data extraction from digital documents',
+                'Rules-based validation reduces manual checking',
+                'Direct digital data capture eliminates manual entry'
+            ],
+            'protective_factors': [
+                'Complex or unusual data may require human verification',
+                'Legacy systems may still need human operators',
+                'Quality control in critical systems benefits from oversight'
+            ],
+            'analysis': 'Data entry roles have extremely high displacement risk as various technologies eliminate manual entry tasks. This is among the most vulnerable occupations to AI automation.'
+        },
+        'Receptionist': {
+            'year_1_risk': 30.0,
+            'year_5_risk': 70.0,
+            'job_category': 'administrative',
+            'risk_factors': [
+                'Digital check-in systems automate visitor processing',
+                'Automated phone systems handle routine calls',
+                'Scheduling software manages appointments',
+                'Virtual receptionist services provide remote alternatives'
+            ],
+            'protective_factors': [
+                'First impression and brand representation benefits from human touch',
+                'Complex visitor situations need human judgment',
+                'Security concerns benefit from human awareness'
+            ],
+            'analysis': 'Basic reception tasks face significant automation, but roles that emphasize security, brand representation, and handling complex visitor situations will evolve rather than disappear completely.'
+        },
+        'Bookkeeper': {
+            'year_1_risk': 40.0,
+            'year_5_risk': 80.0,
+            'job_category': 'administrative',
+            'risk_factors': [
+                'Accounting software automates transaction categorization',
+                'Receipt scanning eliminates manual data entry',
+                'Bank feed integration automates reconciliation',
+                'Automated invoicing reduces manual processing'
+            ],
+            'protective_factors': [
+                'Complex financial situations need human judgment',
+                'Regulatory compliance benefits from human oversight',
+                'Small business relationships add human value'
+            ],
+            'analysis': 'Traditional bookkeeping faces very high displacement risk. Those who transition to advisory roles focused on business strategy, complex financial situations, and compliance will be more resilient.'
+        },
+        
+        # Additional High-Risk Transportation Jobs
+        'Rideshare Driver': {
+            'year_1_risk': 10.0,
+            'year_5_risk': 60.0,
+            'job_category': 'transportation',
+            'risk_factors': [
+                'Self-driving technology is developing rapidly',
+                'Urban transportation routes are highly mappable',
+                'Major investments in autonomous vehicle technology',
+                'Regulatory frameworks for autonomous vehicles are emerging'
+            ],
+            'protective_factors': [
+                'Complex urban navigation still challenges automation',
+                'Customer service aspects benefit from human interaction',
+                'Vehicle monitoring and maintenance needs human attention'
+            ],
+            'analysis': 'Rideshare drivers face significant long-term displacement risk as autonomous vehicle technology matures. The timeline may be longer than for highway driving, but the trend is clear.'
+        },
+        'Taxi Driver': {
+            'year_1_risk': 15.0,
+            'year_5_risk': 65.0,
+            'job_category': 'transportation',
+            'risk_factors': [
+                'Self-driving technology is advancing for urban environments',
+                'Ridesharing has already disrupted traditional taxi businesses',
+                'Automated dispatch systems reduce human coordination',
+                'Autonomous airport shuttles are being tested'
+            ],
+            'protective_factors': [
+                'Local knowledge and navigation still adds value',
+                'Customer service for tourists benefits from human interaction',
+                'Security and safety concerns may require human presence'
+            ],
+            'analysis': 'Taxi drivers face high displacement risk as autonomous vehicles mature, with airport and hotel routes likely to be automated first. Specialized services with significant human interaction may be more resilient.'
+        },
+        'Delivery Driver': {
+            'year_1_risk': 15.0,
+            'year_5_risk': 55.0,
+            'job_category': 'transportation',
+            'risk_factors': [
+                'Autonomous delivery vehicles are being developed and tested',
+                'Drone delivery for small packages is advancing',
+                'Fixed routes are easier to automate',
+                'Last-mile delivery robots are being deployed in some cities'
+            ],
+            'protective_factors': [
+                'Complex delivery logistics still need human problem-solving',
+                'Secure package handling benefits from human accountability',
+                'Customer interaction may add value for some services'
+            ],
+            'analysis': 'While routine delivery routes face significant automation risk, roles requiring complex logistics, secure handling, or specialized customer service will be more resilient.'
+        },
+        'Parking Attendant': {
+            'year_1_risk': 40.0,
+            'year_5_risk': 85.0,
+            'job_category': 'transportation',
+            'risk_factors': [
+                'Automated payment systems eliminate cashier functions',
+                'License plate recognition allows ticketless parking',
+                'Self-parking technology reduces need for valets',
+                'Mobile apps enable remote payment and reservation'
+            ],
+            'protective_factors': [
+                'High-end valet services still value human touch',
+                'Security monitoring benefits from human presence',
+                'Complex parking situations may need human assistance'
+            ],
+            'analysis': 'Parking attendant roles have very high displacement risk due to multiple automation technologies already widely deployed. This trend will accelerate in the next five years.'
+        },
+        'Airline Pilot': {
+            'year_1_risk': 5.0,
+            'year_5_risk': 20.0,
+            'job_category': 'transportation',
+            'risk_factors': [
+                'Autopilot systems already handle most flight phases',
+                'Remote piloting technology is developing',
+                'Autonomous cargo aircraft are being tested',
+                'Single-pilot operations are being considered for some flights'
+            ],
+            'protective_factors': [
+                'Safety regulations require human oversight',
+                'Emergency handling needs human judgment',
+                'Passenger confidence relies on human pilots',
+                'Complex weather and airport situations need human expertise'
+            ],
+            'analysis': 'Commercial pilots have relatively low near-term displacement risk due to safety regulations and passenger expectations, though automated systems will continue to handle more flight functions.'
         },
         
         # Transportation Jobs
@@ -651,13 +1098,227 @@ with tabs[0]:  # Single Job Analysis tab
     }
 
     # Function to get job data (simplified for fast loading)
+    def categorize_job(job_title):
+        """Attempt to categorize a job title not in our database"""
+        job_lower = job_title.lower()
+        
+        # Check aliases first
+        if job_lower in JOB_ALIASES:
+            return JOB_DATA[JOB_ALIASES[job_lower]]['job_category']
+        
+        # Check for keywords that might indicate category
+        if any(word in job_lower for word in ['code', 'developer', 'engineer', 'software', 'programmer', 'data', 'it', 'tech', 'computer']):
+            return 'technical'
+        elif any(word in job_lower for word in ['teach', 'professor', 'faculty', 'instructor', 'school', 'education', 'tutor', 'academic']):
+            return 'education'
+        elif any(word in job_lower for word in ['doctor', 'nurse', 'medical', 'health', 'therapy', 'therapist', 'clinic', 'patient', 'dental', 'care']):
+            return 'healthcare'
+        elif any(word in job_lower for word in ['driver', 'pilot', 'deliver', 'truck', 'transport', 'shipping', 'logistics']):
+            return 'transportation'
+        elif any(word in job_lower for word in ['retail', 'store', 'shop', 'merchandise', 'inventory', 'cashier']):
+            return 'retail'
+        elif any(word in job_lower for word in ['sales', 'account', 'marketing', 'business development', 'client']):
+            return 'sales'
+        elif any(word in job_lower for word in ['service', 'support', 'representative', 'call center', 'helpdesk']):
+            return 'customer_service'
+        elif any(word in job_lower for word in ['admin', 'assistant', 'secretary', 'clerk', 'receptionist', 'office']):
+            return 'administrative'
+        else:
+            return 'general'
+    
+    def estimate_job_risk(job_title, category):
+        """Estimate risk levels based on job category and title"""
+        job_lower = job_title.lower()
+        
+        # Base risk levels by category
+        category_risks = {
+            'technical': {'year_1': 15.0, 'year_5': 35.0},
+            'education': {'year_1': 10.0, 'year_5': 25.0},
+            'healthcare': {'year_1': 10.0, 'year_5': 25.0},
+            'transportation': {'year_1': 20.0, 'year_5': 60.0},
+            'retail': {'year_1': 30.0, 'year_5': 65.0},
+            'sales': {'year_1': 20.0, 'year_5': 45.0},
+            'customer_service': {'year_1': 30.0, 'year_5': 70.0},
+            'administrative': {'year_1': 35.0, 'year_5': 75.0},
+            'general': {'year_1': 30.0, 'year_5': 50.0},
+        }
+        
+        # Additional risk factors
+        risk_adjustments = {
+            'assistant': {'year_1': +5.0, 'year_5': +10.0},
+            'entry': {'year_1': +5.0, 'year_5': +10.0},
+            'junior': {'year_1': +5.0, 'year_5': +10.0},
+            'clerk': {'year_1': +10.0, 'year_5': +15.0},
+            'manager': {'year_1': -5.0, 'year_5': -5.0},
+            'director': {'year_1': -10.0, 'year_5': -10.0},
+            'executive': {'year_1': -10.0, 'year_5': -10.0},
+            'specialist': {'year_1': -5.0, 'year_5': -5.0},
+            'expert': {'year_1': -10.0, 'year_5': -10.0},
+            'analyst': {'year_1': -5.0, 'year_5': -5.0},
+            'data': {'year_1': -5.0, 'year_5': +5.0},  # Short term less risk, long term more
+        }
+        
+        # Get base risk for category
+        year_1_risk = category_risks[category]['year_1']
+        year_5_risk = category_risks[category]['year_5']
+        
+        # Apply adjustments based on keywords in title
+        for keyword, adjustment in risk_adjustments.items():
+            if keyword in job_lower:
+                year_1_risk += adjustment['year_1']
+                year_5_risk += adjustment['year_5']
+        
+        # Ensure risk values stay within reasonable bounds
+        year_1_risk = max(5.0, min(year_1_risk, 50.0))
+        year_5_risk = max(15.0, min(year_5_risk, 90.0))
+        year_5_risk = max(year_1_risk + 10.0, year_5_risk)  # Ensure 5-year risk is at least 10% higher
+        
+        return year_1_risk, year_5_risk
+    
+    def add_job_to_database(job_title):
+        """Add a new job to the database with estimated values"""
+        # Determine the most likely category
+        category = categorize_job(job_title)
+        
+        # Estimate risk levels
+        year_1_risk, year_5_risk = estimate_job_risk(job_title, category)
+        
+        # Generate risk factors based on category and risk level
+        risk_factors = []
+        protective_factors = []
+        
+        # Basic risk factors by category
+        category_risk_factors = {
+            'technical': [
+                'Automation of routine coding and testing tasks',
+                'AI code generation and debugging tools',
+                'Global competition and remote work possibilities'
+            ],
+            'education': [
+                'Online learning platforms increasing reach of top educators',
+                'AI-generated content and lesson plans',
+                'Automated grading and assessment tools'
+            ],
+            'healthcare': [
+                'AI diagnostic systems for common conditions',
+                'Automated monitoring and record-keeping',
+                'Telemedicine reducing need for in-person visits'
+            ],
+            'transportation': [
+                'Self-driving and autonomous vehicle technology',
+                'Route optimization reducing needed drivers',
+                'Automated logistics and dispatch systems'
+            ],
+            'retail': [
+                'E-commerce reducing in-store shopping',
+                'Self-checkout and automated payment systems',
+                'Inventory management automation'
+            ],
+            'sales': [
+                'Online purchasing reducing need for sales representatives',
+                'CRM automation handling routine follow-ups',
+                'AI-powered lead scoring and qualification'
+            ],
+            'customer_service': [
+                'AI chatbots handling routine inquiries',
+                'Self-service knowledge bases reducing support tickets',
+                'Voice recognition systems automating phone support'
+            ],
+            'administrative': [
+                'Scheduling and email automation tools',
+                'Document processing and filing automation',
+                'Digital workflow systems reducing paper handling'
+            ],
+            'general': [
+                'AI and automation affecting most industries',
+                'Routine aspects of work increasingly automated',
+                'Economic pressure to increase efficiency'
+            ]
+        }
+        
+        # Basic protective factors by category
+        category_protective_factors = {
+            'technical': [
+                'Complex problem-solving requires human creativity',
+                'System architecture needs human planning',
+                'Client communication benefits from human understanding'
+            ],
+            'education': [
+                'Emotional connection with students is difficult to automate',
+                'Adaptive teaching requires human judgment',
+                'Inspiration and mentorship need human connection'
+            ],
+            'healthcare': [
+                'Complex diagnoses require human judgment',
+                'Patient comfort and support need human empathy',
+                'Ethical decisions benefit from human values'
+            ],
+            'transportation': [
+                'Complex navigation in unpredictable environments',
+                'Customer service aspects benefit from human touch',
+                'Emergency handling requires human judgment'
+            ],
+            'retail': [
+                'Personalized shopping experiences need human touch',
+                'Complex product questions benefit from human expertise',
+                'Loss prevention and security need human oversight'
+            ],
+            'sales': [
+                'Complex solution selling requires human expertise',
+                'Relationship building needs human connection',
+                'Negotiation in major deals benefits from human judgment'
+            ],
+            'customer_service': [
+                'Complex problem resolution needs human judgment',
+                'Emotional situations benefit from human empathy',
+                'Unusual cases require human flexibility'
+            ],
+            'administrative': [
+                'Complex coordination across teams needs human judgment',
+                'Confidential matters benefit from human discretion',
+                'Office culture support requires human touch'
+            ],
+            'general': [
+                'Complex decision-making requires human judgment',
+                'Social intelligence is difficult to automate',
+                'Adaptability and creativity remain human strengths'
+            ]
+        }
+        
+        # Generate analysis based on job title, category and risk level
+        if year_5_risk >= 70:
+            analysis = f"This job faces very high displacement risk from AI and automation technologies. Roles in {category} with routine, predictable tasks are particularly vulnerable. Consider developing skills in areas requiring complex judgment, creativity, or human interaction."
+        elif year_5_risk >= 50:
+            analysis = f"This job faces significant displacement risk over the next five years. While not all aspects will be automated, many routine tasks in {category} roles will likely be performed by AI systems. Focus on developing skills that complement rather than compete with technology."
+        elif year_5_risk >= 30:
+            analysis = f"This job faces moderate displacement risk. Technology will change how this work is performed, but human expertise in {category} will remain valuable. Continuous upskilling and focusing on complex aspects of the work will help maintain career resilience."
+        else:
+            analysis = f"This job has relatively low displacement risk compared to many others. While technology will augment this role, core aspects of work in {category} still require human judgment and expertise. Nonetheless, embracing technological tools will be important for career advancement."
+        
+        # Add the job to the database
+        JOB_DATA[job_title] = {
+            'year_1_risk': year_1_risk,
+            'year_5_risk': year_5_risk,
+            'job_category': category,
+            'risk_factors': category_risk_factors[category],
+            'protective_factors': category_protective_factors[category],
+            'analysis': f"Note: This job was automatically added to our database based on estimated values. {analysis}"
+        }
+        
+        return JOB_DATA[job_title]
+    
     def get_quick_job_data(job_title):
+        """Get job data with automatic addition of new jobs"""
         # Check if we have exact data for this job
         if job_title in JOB_DATA:
             return JOB_DATA[job_title]
         
-        # Look for similar jobs (very simple matching)
+        # Check if it's in our aliases
         lower_title = job_title.lower()
+        if lower_title in JOB_ALIASES:
+            return JOB_DATA[JOB_ALIASES[lower_title]]
+        
+        # Look for similar jobs (very simple matching)
         for known_job, data in JOB_DATA.items():
             if known_job.lower() in lower_title or lower_title in known_job.lower():
                 # Return with adjusted values and note
@@ -665,23 +1326,9 @@ with tabs[0]:  # Single Job Analysis tab
                 result['analysis'] = f"Note: Using data from similar role ({known_job}). " + result['analysis'] 
                 return result
         
-        # Default values if no match found
-        return {
-            'year_1_risk': 30.0,
-            'year_5_risk': 50.0,
-            'job_category': 'general',
-            'risk_factors': [
-                'AI and automation are affecting most industries',
-                'Routine aspects of most jobs can be automated',
-                'Economic pressure to increase efficiency'
-            ],
-            'protective_factors': [
-                'Complex decision-making often requires human judgment',
-                'Social intelligence and emotional aspects are difficult to automate',
-                'Adaptability and creativity remain human strengths'
-            ],
-            'analysis': 'We don\'t have specific data for this job title, but most roles face some level of disruption from AI and automation. Jobs that require adaptability, creativity, and complex problem-solving tend to be more resilient.'
-        }
+        # If we get here, we need to add the job to our database
+        st.info(f"We're updating our database to include '{job_title}'. This will take just a moment...")
+        return add_job_to_database(job_title)
 
     # Create the two options side by side
     col1, col2 = st.columns(2)
@@ -711,11 +1358,13 @@ with tabs[0]:  # Single Job Analysis tab
         # Add a button to analyze the custom job
         analyze_custom = st.button("Analyze Custom Job", type="primary")
     
-    # Add a Clear Entries button
-    if st.button("Clear Entries", type="secondary"):
-        # This will trigger a rerun with empty values
-        st.session_state.clear()
-        st.rerun()
+    # Add a Clear Entries button centered on the screen
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        if st.button("Clear Entries", type="secondary"):
+            # This will trigger a rerun with empty values
+            st.session_state.clear()
+            st.rerun()
     
     # Determine which job to analyze
     job_to_analyze = None
@@ -1157,11 +1806,13 @@ with tabs[1]:  # Job Comparison tab
                 if job and job not in jobs_to_compare:
                     jobs_to_compare.append(job)
     
-    # Clear selections button
-    if st.button("Clear All Selections", type="secondary"):
-        # This will trigger a rerun with empty values
-        st.session_state.clear()
-        st.rerun()
+    # Clear selections button centered
+    col1, col2, col3 = st.columns([1, 1, 1])
+    with col2:
+        if st.button("Clear All Selections", type="secondary"):
+            # This will trigger a rerun with empty values
+            st.session_state.clear()
+            st.rerun()
     
     # Display comparison when at least 2 jobs are selected
     if jobs_to_compare and len(jobs_to_compare) >= 2:
