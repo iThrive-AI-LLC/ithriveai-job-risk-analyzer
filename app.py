@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+import bls_job_mapper
 import json
 import datetime
 import os
