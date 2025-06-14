@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import bls_job_mapper
 import json
 import datetime
 import os
@@ -33,6 +32,7 @@ import ai_job_displacement
 import time
 import re
 import career_navigator
+import bls_job_mapper # Import the list for admin tool
 from sqlalchemy import create_engine, text
 import logging # Added for logger
 
@@ -802,7 +802,7 @@ with tabs[0]:  # Single Job Analysis tab
                     st.markdown("<p style='color: #666666; font-weight: bold;'>When</p>", unsafe_allow_html=True)
                 
                 # Display recent searches
-                for search in recent_searches:
+                for i, search in enumerate(recent_searches): # Added enumerate for unique key
                     job_title = search.get("job_title", "Unknown Job")
                     risk_category = search.get("risk_category", "Unknown")
                     timestamp = search.get("timestamp")
