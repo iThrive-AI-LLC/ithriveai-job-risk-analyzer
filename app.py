@@ -32,6 +32,9 @@ get_popular_searches_db = None
 get_highest_risk_jobs_db = None
 get_lowest_risk_jobs_db = None
 get_recent_searches_db = None
+check_database_health = None # Placeholder for a health check function
+get_database_stats = None # Placeholder for a stats function
+
 
 try:
     from database import (
@@ -42,7 +45,9 @@ try:
         get_popular_searches as get_popular_searches_imported,
         get_highest_risk_jobs as get_highest_risk_jobs_imported,
         get_lowest_risk_jobs as get_lowest_risk_jobs_imported,
-        get_recent_searches as get_recent_searches_imported
+        get_recent_searches as get_recent_searches_imported,
+        check_database_health as check_database_health_imported, # Attempt to import
+        get_database_stats as get_database_stats_imported # Attempt to import
     )
     db_engine = db_engine_imported
     db_Session = db_Session_imported
@@ -52,6 +57,8 @@ try:
     get_highest_risk_jobs_db = get_highest_risk_jobs_imported
     get_lowest_risk_jobs_db = get_lowest_risk_jobs_imported
     get_recent_searches_db = get_recent_searches_imported
+    check_database_health = check_database_health_imported
+    get_database_stats = get_database_stats_imported
     
     # Check if engine and Session are truly available
     if db_engine is not None and db_Session is not None:
@@ -75,6 +82,7 @@ if database_available:
     get_highest_risk_jobs = get_highest_risk_jobs_db
     get_lowest_risk_jobs = get_lowest_risk_jobs_db
     get_recent_searches = get_recent_searches_db
+    # check_database_health and get_database_stats are already assigned or None
 else:
     from db_fallback import (
         save_job_search as save_job_search_fb, 
@@ -94,9 +102,11 @@ else:
 import job_api_integration_database_only as job_api_integration
 import simple_comparison
 import career_navigator
-# import bls_job_mapper # Already imported by job_api_integration_database_only
+import bls_job_mapper 
+from bls_job_mapper import TARGET_SOC_CODES 
 from job_title_autocomplete_v2 import job_title_autocomplete, load_job_titles_from_db
 from sqlalchemy import text 
+
 
 # --- Keep-Alive Functionality ---
 def keep_alive():
@@ -278,6 +288,99 @@ def check_data_refresh():
             json.dump({"date": datetime.datetime.now().isoformat()}, f)
         return True
 
+# --- Admin Controls Setup ---
+if 'admin_current_soc_index' not in st.session_state:
+    st.session_state.admin_current_soc_index = 0
+if 'admin_auto_run_batch' not in st.session_state:
+    st.session_state.admin_auto_run_batch = False
+if 'admin_failed_socs' not in st.session_state:
+    st.session_state.admin_failed_socs = []
+if 'admin_target_socs' not in st.session_state:
+    st.session_state.admin_target_socs = [] 
+if 'admin_processed_count' not in st.session_state:
+    st.session_state.admin_processed_count = 0
+
+if not st.session_state.admin_target_socs:
+    try:
+        st.session_state.admin_target_socs = bls_job_mapper.TARGET_SOC_CODES
+        logger.info(f"Admin: Successfully loaded {len(st.session_state.admin_target_socs)} target SOC codes.")
+    except AttributeError:
+        logger.error("Admin: TARGET_SOC_CODES not found in bls_job_mapper. Admin tool will be limited.")
+        st.session_state.admin_target_socs = []
+            
+# --- Admin Dashboard Logic ---
+def run_batch_processing(batch_size, api_delay):
+    processed_in_batch = 0
+    start_index = st.session_state.admin_current_soc_index
+    target_socs = st.session_state.admin_target_socs
+    
+    if not target_socs:
+        st.error("Admin: No target SOC codes loaded. Cannot run batch.")
+        st.session_state.admin_auto_run_batch = False
+        return
+
+    for i in range(start_index, min(start_index + batch_size, len(target_socs))):
+        if not st.session_state.admin_auto_run_batch:
+            logger.info("Admin: Batch processing paused by user.")
+            break 
+            
+        current_soc_info = target_socs[i]
+        
+        soc_code = None
+        job_title_for_api = None
+
+        if isinstance(current_soc_info, tuple) and len(current_soc_info) == 2:
+            soc_code = current_soc_info[0]
+            job_title_for_api = current_soc_info[1]
+            logger.info(f"Admin: Processing SOC tuple (Index {i}): {soc_code} - {job_title_for_api}")
+        elif isinstance(current_soc_info, dict) and "soc_code" in current_soc_info and "title" in current_soc_info:
+            soc_code = current_soc_info["soc_code"]
+            job_title_for_api = current_soc_info["title"]
+            logger.info(f"Admin: Processing SOC dict (Index {i}): {soc_code} - {job_title_for_api}")
+        else:
+            logger.error(f"Admin: Invalid structure for TARGET_SOC_CODES at index {i}: {current_soc_info}. Skipping.")
+            if {"soc_info": str(current_soc_info), "reason": "Invalid structure"} not in st.session_state.admin_failed_socs:
+                 st.session_state.admin_failed_socs.append({"soc_info": str(current_soc_info), "reason": "Invalid structure"})
+            st.session_state.admin_current_soc_index = i + 1 # Ensure progress
+            st.session_state.admin_processed_count +=1 
+            continue
+
+        if soc_code and job_title_for_api:
+            progress_value = (st.session_state.admin_processed_count + 1) / len(target_socs) if target_socs and len(target_socs) > 0 else 0
+            clamped_progress_value = min(1.0, max(0.0, progress_value))
+            progress_bar.progress(clamped_progress_value, text=f"Processing: {job_title_for_api} ({soc_code})")
+            status_message.info(f"Fetching and processing: {job_title_for_api} ({soc_code})...")
+            
+            try:
+                success, message = bls_job_mapper.fetch_and_process_soc_data(soc_code, job_title_for_api, db_engine)
+                if success:
+                    logger.info(f"Admin: Successfully processed {soc_code} - {job_title_for_api}")
+                    status_message.success(f"Successfully processed: {job_title_for_api} ({soc_code})")
+                else:
+                    logger.error(f"Admin: Failed to process {soc_code} - {job_title_for_api}: {message}")
+                    status_message.error(f"Failed: {job_title_for_api} ({soc_code}) - {message}")
+                    if {"soc_code": soc_code, "title": job_title_for_api, "reason": message} not in st.session_state.admin_failed_socs:
+                        st.session_state.admin_failed_socs.append({"soc_code": soc_code, "title": job_title_for_api, "reason": message})
+            except Exception as e:
+                logger.error(f"Admin: Exception processing {soc_code} - {job_title_for_api}: {e}", exc_info=True)
+                status_message.error(f"Exception for {job_title_for_api} ({soc_code}): {e}")
+                if {"soc_code": soc_code, "title": job_title_for_api, "reason": str(e)} not in st.session_state.admin_failed_socs:
+                     st.session_state.admin_failed_socs.append({"soc_code": soc_code, "title": job_title_for_api, "reason": str(e)})
+
+            processed_in_batch += 1
+            st.session_state.admin_processed_count += 1
+            time.sleep(api_delay) 
+        
+        st.session_state.admin_current_soc_index = i + 1 
+        
+    if st.session_state.admin_current_soc_index >= len(target_socs):
+        st.session_state.admin_auto_run_batch = False 
+        status_message.success("All SOC codes processed!")
+        logger.info("Admin: All SOC codes processed.")
+    
+    logger.info(f"Admin: Batch iteration complete. Progress saved. Next index: {st.session_state.admin_current_soc_index}")
+    st.rerun()
+
 # --- Tabs for different sections ---
 tabs = st.tabs(["Single Job Analysis", "Job Comparison"])
 logger.info("Tabs defined for main app layout.")
@@ -286,8 +389,9 @@ logger.info("Tabs defined for main app layout.")
 with tabs[0]:
     st.markdown("<h2 style='color: #0084FF;'>Analyze a Job</h2>", unsafe_allow_html=True)
     
+    st.markdown("<p style='text-align: center; color: #666666; font-size: 14px;'>📊 This application uses authentic Bureau of Labor Statistics (BLS) data only. No synthetic or fictional data is used.</p>", unsafe_allow_html=True)
     if bls_api_key:
-        st.info("📊 Using real-time data from the Bureau of Labor Statistics API (via local database cache)")
+        st.info("📊 Using real-time data from the Bureau of Labor Statistics API (via local database cache).")
     else:
         st.warning("📊 BLS API Key not configured. Data is sourced from the local database only.")
     
@@ -508,8 +612,8 @@ with tabs[0]:
                             
                             delta = now - timestamp_recent
                             if delta.days > 0: time_ago = f"{delta.days} days ago"
-                            elif delta.seconds >= 3600: hours = delta.seconds // 3600; time_ago = f"{hours} hour{'s' if hours > 1 else ''} ago"
-                            elif delta.seconds >= 60: minutes = delta.seconds // 60; time_ago = f"{minutes} minute{'s' if minutes > 1 else ''} ago"
+                            elif delta.seconds // 3600 > 0: hours = delta.seconds // 3600; time_ago = f"{hours} hour{'s' if hours > 1 else ''} ago"
+                            elif delta.seconds // 60 > 0: minutes = delta.seconds // 60; time_ago = f"{minutes} minute{'s' if minutes > 1 else ''} ago"
                             else: time_ago = "Just now"
                         
                         risk_color = {"Very High": "#FF4B4B", "High": "#FF8C42", "Moderate": "#FFCC3E", "Low": "#4CAF50"}.get(risk_category_recent, "#666666")
