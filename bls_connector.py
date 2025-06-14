@@ -9,6 +9,7 @@ import requests
 import json
 import time
 import logging
+import datetime # Added missing import
 from typing import Dict, List, Any, Optional
 import streamlit as st # For caching, assuming it's run in a Streamlit context
 
@@ -309,6 +310,7 @@ def search_occupations(query: str, limit: int = 10) -> List[Dict[str, str]]:
         {"code": "11-1011", "title": "Chief Executives"},
         {"code": "15-1252", "title": "Software Developers"},
         {"code": "15-1254", "title": "Web Developers"},
+        {"code": "17-2071", "title": "Electrical Engineers"},
         {"code": "29-1141", "title": "Registered Nurses"},
         {"code": "25-2021", "title": "Elementary School Teachers, Except Special Education"},
         {"code": "13-2011", "title": "Accountants and Auditors"},
@@ -398,17 +400,17 @@ if __name__ == "__main__":
             else:
                 logger.error(f"Failed to get data for {dev_occ_code}: {dev_data.get('message')}")
             
-            logger.info("\n--- Test 4: get_occupation_data (Non-existent/Invalid SOC for OES) ---")
-            invalid_occ_code = "99-9999" # Made up
-            invalid_data = get_occupation_data(invalid_occ_code)
-            if invalid_data.get("status") == "success": # It might still be success if API responds but data is empty/suppressed
-                logger.info(f"Response for invalid SOC {invalid_occ_code}: Employment: {invalid_data['data'].get('employment')}, Median Wage: {invalid_data['data'].get('annual_median_wage')}")
-                if invalid_data['data'].get('messages'):
-                     logger.info(f"  Messages: {invalid_data['data']['messages']}")
-                if not invalid_data['data'].get('employment') and not invalid_data['data'].get('annual_median_wage'):
-                    logger.info(f"Correctly returned no specific data for invalid SOC {invalid_occ_code}.")
+            logger.info("\n--- Test 4: get_occupation_data (Electrical Engineers) ---")
+            ee_occ_code = "17-2071"
+            ee_data = get_occupation_data(ee_occ_code)
+            if ee_data.get("status") == "success":
+                logger.info(f"Electrical Engineer ({ee_occ_code}) Data:")
+                logger.info(f"  Latest Employment: {ee_data['data'].get('employment')}")
+                logger.info(f"  Latest Median Wage: {ee_data['data'].get('annual_median_wage')}")
+                if ee_data['data'].get('messages'):
+                    logger.info(f"  Messages: {ee_data['data']['messages']}")
             else:
-                 logger.error(f"Error response for invalid SOC {invalid_occ_code}: {invalid_data.get('message')}")
+                logger.error(f"Failed to get data for {ee_occ_code}: {ee_data.get('message')}")
 
 
             # Test get_employment_projection (will show info message)
