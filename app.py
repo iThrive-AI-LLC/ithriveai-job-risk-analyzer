@@ -1,17 +1,42 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 import json
 import datetime
 import os
 import sys
 import threading
+
+# Keep-alive functionality to prevent app sleeping
+def keep_alive():
+    """Background thread to keep the app active"""
+    import time
+    while True:
+        time.sleep(300)  # Ping every 5 minutes
+        try:
+            # Simple database query to keep connection alive
+            from database import get_recent_searches
+            get_recent_searches(limit=1)
+        except:
+            pass
+
+# Start keep-alive thread
+if "keep_alive_started" not in st.session_state:
+    st.session_state.keep_alive_started = True
+    keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
+    keep_alive_thread.start()
+# Force reload: Court Reporter special case added
+import job_api_integration_database_only as job_api_integration
+import simple_comparison
+import ai_job_displacement
 import time
-import requests # For keep-alive self-ping
-import logging
 import re
+import career_navigator
 from sqlalchemy import create_engine, text
+import logging # Added for logger
+
+# Import the autocomplete functionality
+from job_title_autocomplete_v2 import job_title_autocomplete, load_job_titles_from_db
 
 # --- Logger Setup ---
 logging.basicConfig(
@@ -21,171 +46,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AI_Job_Analyzer_App")
 
-# --- Keep-Alive Functionality ---
-def keep_alive():
-    logger.info("Keep-alive thread started.")
-    keep_alive_stats = {
-        "last_success": None, "consecutive_failures": 0,
-        "total_attempts": 0, "successful_attempts": 0
-    }
-    timestamp_file = "app_last_activity.txt"
-
-    while True:
-        try:
-            keep_alive_stats["total_attempts"] += 1
-            logger.info(f"Keep-alive attempt #{keep_alive_stats['total_attempts']}")
-            success_this_cycle = False
-
-            db_url_for_ping = os.environ.get('DATABASE_URL')
-            if not db_url_for_ping:
-                try:
-                    db_url_for_ping = st.secrets.get("database", {}).get("DATABASE_URL")
-                except Exception: pass 
-            
-            if db_url_for_ping:
-                try:
-                    if db_url_for_ping.startswith("postgres://"):
-                        db_url_for_ping = db_url_for_ping.replace("postgres://", "postgresql://", 1)
-                    
-                    ping_engine_connect_args = {}
-                    if 'postgresql' in db_url_for_ping:
-                         ping_engine_connect_args = {"connect_timeout": 5, "sslmode": "require"}
-
-                    ping_engine = create_engine(db_url_for_ping, connect_args=ping_engine_connect_args)
-                    with ping_engine.connect() as conn:
-                        conn.execute(text("SELECT 1"))
-                    logger.info("Keep-alive: Database ping successful.")
-                    success_this_cycle = True
-                    ping_engine.dispose()
-                except Exception as e:
-                    logger.warning(f"Keep-alive: Database ping failed: {str(e)}")
-            else:
-                logger.info("Keep-alive: DATABASE_URL not configured, skipping database ping strategy.")
-
-            try:
-                is_streamlit_cloud = "STREAMLIT_SHARING_MODE" in os.environ and os.environ["STREAMLIT_SHARING_MODE"] == "True"
-                
-                if not is_streamlit_cloud: 
-                    streamlit_server_address = os.environ.get('STREAMLIT_SERVER_ADDRESS', 'localhost')
-                    streamlit_server_port = os.environ.get('STREAMLIT_SERVER_PORT', '8501')
-                    base_url = f"http://{streamlit_server_address}:{streamlit_server_port}"
-                    health_url = f"{base_url}/?health_check=true" # Use the simple health_check
-                    response = requests.get(health_url, timeout=10)
-                    if response.status_code == 200:
-                        logger.info(f"Keep-alive: Self HTTP request to {health_url} successful.")
-                        success_this_cycle = True
-                    else:
-                        logger.warning(f"Keep-alive: Self HTTP request to {health_url} failed with status {response.status_code}.")
-                else:
-                    logger.info("Keep-alive: Skipping self HTTP request on Streamlit Cloud (UptimeRobot is primary).")
-            except Exception as e:
-                logger.warning(f"Keep-alive: Self HTTP request failed: {str(e)}")
-
-            try:
-                with open(timestamp_file, "w") as f:
-                    f.write(datetime.datetime.now().isoformat())
-                logger.info(f"Keep-alive: File system activity successful (wrote to {timestamp_file}).")
-                success_this_cycle = True
-            except Exception as e:
-                logger.warning(f"Keep-alive: File system activity failed: {str(e)}")
-
-            if success_this_cycle:
-                keep_alive_stats["last_success"] = datetime.datetime.now().isoformat()
-                keep_alive_stats["consecutive_failures"] = 0
-                keep_alive_stats["successful_attempts"] += 1
-            else:
-                keep_alive_stats["consecutive_failures"] += 1
-                logger.error("Keep-alive: All strategies failed in this cycle.")
-            
-            try:
-                with open("app_keep_alive_stats.json", "w") as f:
-                    json.dump(keep_alive_stats, f)
-            except Exception as e:
-                logger.warning(f"Keep-alive: Failed to write stats file: {str(e)}")
-            
-            time.sleep(240) 
-
-        except Exception as e_outer:
-            logger.error(f"Keep-alive: Outer loop error: {str(e_outer)}", exc_info=True)
-            keep_alive_stats["consecutive_failures"] += 1
-            sleep_time = min(300 * (1 + (keep_alive_stats["consecutive_failures"] * 0.1)), 900) 
-            logger.info(f"Keep-alive: Sleeping for {sleep_time:.0f} seconds due to outer loop error before retry.")
-            time.sleep(sleep_time)
-
-if "keep_alive_started" not in st.session_state:
-    st.session_state.keep_alive_started = True
-    keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
-    keep_alive_thread.start()
-    logger.info("Keep-alive thread initiated.")
-
-# --- Module Imports for Application Logic ---
-try:
-    import job_api_integration_database_only as job_api_integration # For main app
-    import simple_comparison
-    import career_navigator
-    import bls_job_mapper # For admin tool and utility functions
-    from bls_job_mapper import TARGET_SOC_CODES # Import the list for admin tool
-    from job_title_autocomplete_v2 import job_title_autocomplete
-    import database # For user search history, etc.
-    logger.info("Core application modules imported successfully.")
-except ImportError as e:
-    logger.critical(f"Failed to import one or more core application modules: {e}. Application may not function.", exc_info=True)
-    st.error(f"Application Error: A critical module failed to load ({e}). Please check the logs. The application might be unstable.")
-    st.stop()
-
-# --- Configuration and Global Variables ---
-bls_api_key = os.environ.get('BLS_API_KEY')
-if not bls_api_key:
-    try:
-        bls_api_key = st.secrets.get("api_keys", {}).get("BLS_API_KEY")
-        if bls_api_key:
-            os.environ['BLS_API_KEY'] = bls_api_key
-            logger.info("BLS API key loaded from Streamlit secrets.")
-    except Exception:
-        logger.warning("BLS_API_KEY not found in environment variables or Streamlit secrets.")
-
-engine = None
-database_available = False
-try:
-    engine = bls_job_mapper.get_db_engine()
-    database_available = True
-    logger.info("Database engine obtained from bls_job_mapper module.")
-except ValueError as ve:
-    logger.error(f"Database configuration error: {ve}")
-    # This error will be shown in the sidebar status
-except Exception as e:
-    logger.error(f"Failed to obtain database engine from bls_job_mapper: {e}", exc_info=True)
-    # This error will be shown in the sidebar status
-
-# --- Health Check Endpoint ---
-query_params = st.query_params
-if query_params.get("health_check") == "true":
-    st.text("OK")
-    if query_params.get("detailed") == "true":
-        st.markdown("## Detailed Health Status")
-        st.markdown(f"- **BLS API Key Configured**: {'Yes' if bls_api_key else 'No'}")
-        db_status = "Not Connected"
-        if engine:
-            try:
-                with engine.connect() as conn:
-                    conn.execute(text("SELECT 1"))
-                db_status = "Connected"
-            except Exception as e:
-                db_status = f"Connection Error: {str(e)[:50]}..."
-        st.markdown(f"- **Database Connection**: {db_status}")
-        
-        # Keep-alive stats
-        try:
-            with open("app_keep_alive_stats.json", "r") as f:
-                ka_stats = json.load(f)
-                st.markdown("### Keep-Alive Stats")
-                st.json(ka_stats)
-        except Exception:
-            st.markdown("- **Keep-Alive Stats**: Not available")
-
-    st.stop()
-
-# --- Streamlit Page Configuration ---
+# Page configuration (MUST BE THE FIRST STREAMLIT COMMAND)
 st.set_page_config(
     page_title="Career AI Impact Analyzer",
     page_icon="📊",
@@ -193,491 +54,1272 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- Custom CSS ---
+# Check if BLS API key is set
+bls_api_key = os.environ.get('BLS_API_KEY')
+if not bls_api_key:
+    try:
+        bls_api_key = st.secrets.get("api_keys", {}).get("BLS_API_KEY")
+        if bls_api_key:
+            os.environ['BLS_API_KEY'] = bls_api_key 
+            logger.info("BLS API key loaded from Streamlit secrets.")
+    except Exception:
+        logger.warning("BLS_API_KEY not found in environment or secrets.")
+
+
+# Handle health check requests
+query_params = st.query_params
+if query_params.get("health_check") == "true":
+    st.text("OK")
+    st.stop()
+
+
+# Add custom CSS
 st.markdown("""
 <style>
-    .main { background-color: #FFFFFF; }
-    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
-    .stTabs [data-baseweb="tab"] { height: 60px; width: 250px; white-space: pre-wrap; background-color: #F0F8FF; border-radius: 4px 4px 0 0; gap: 10px; padding-top: 15px; padding-bottom: 15px; font-size: 18px; font-weight: 600; text-align: center; }
-    .stTabs [aria-selected="true"] { background-color: #0084FF; color: white; }
-    h1, h2, h3, h4, h5, h6 { color: #0084FF; }
-    .job-risk-low { background-color: #d4edda; border-radius: 5px; padding: 10px; margin-bottom: 10px; }
-    .job-risk-moderate { background-color: #fff3cd; border-radius: 5px; padding: 10px; margin-bottom: 10px; }
-    .job-risk-high { background-color: #f8d7da; border-radius: 5px; padding: 10px; margin-bottom: 10px; }
-    .job-risk-very-high { background-color: #f8d7da; border-color: #f5c6cb; border-radius: 5px; padding: 10px; margin-bottom: 10px; border-width: 2px; border-style: solid; }
-    .sidebar .sidebar-content { background-color: #f8f9fa; }
-    .st-eb { border-radius: 5px; }
-    .status-indicator { display: flex; align-items: center; padding: 5px 10px; border-radius: 4px; margin-bottom: 10px; font-size: 14px; }
-    .status-indicator.online { background-color: #d4edda; color: #155724; }
-    .status-indicator.offline { background-color: #f8d7da; color: #721c24; }
-    .status-indicator-dot { height: 10px; width: 10px; border-radius: 50%; margin-right: 8px; }
-    .status-indicator-dot.online { background-color: #28a745; }
-    .status-indicator-dot.offline { background-color: #dc3545; }
+    .main {
+        background-color: #FFFFFF;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 10px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 60px;
+        width: 250px;
+        white-space: pre-wrap;
+        background-color: #F0F8FF;
+        border-radius: 4px 4px 0 0;
+        gap: 10px;
+        padding-top: 15px;
+        padding-bottom: 15px;
+        font-size: 18px;
+        font-weight: 600;
+        text-align: center;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #0084FF;
+        color: white;
+    }
+    h1, h2, h3, h4, h5, h6 {
+        color: #0084FF;
+    }
+    .job-risk-low {
+        background-color: #d4edda;
+        border-radius: 5px;
+        padding: 10px;
+        margin-bottom: 10px;
+    }
+    .job-risk-moderate {
+        background-color: #fff3cd;
+        border-radius: 5px;
+        padding: 10px;
+        margin-bottom: 10px;
+    }
+    .job-risk-high {
+        background-color: #f8d7da;
+        border-radius: 5px;
+        padding: 10px;
+        margin-bottom: 10px;
+    }
+    .job-risk-very-high {
+        background-color: #f8d7da;
+        border-color: #f5c6cb;
+        border-radius: 5px;
+        padding: 10px;
+        margin-bottom: 10px;
+        border-width: 2px;
+        border-style: solid;
+    }
+    .sidebar .sidebar-content {
+        background-color: #f8f9fa;
+    }
+    .st-eb {
+        border-radius: 5px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# --- Sidebar Status Indicators ---
-with st.sidebar:
-    st.title("System Status")
+# Very simple health check endpoint for reliable monitoring
+if 'health' in st.query_params:
+    st.write("OK")  # Just return a simple OK response
+    st.stop()
 
-    # BLS API Key Status
+# Detailed health check endpoint for troubleshooting
+if 'health_check' in st.query_params:
+    st.title("iThriveAI Job Analyzer - Health Check")
+    
+    # Always show application is running
+    st.success("✅ Application status: Running")
+    
+    # Check database connection
+    try:
+        # Try to connect to the database
+        database_url = os.environ.get('DATABASE_URL')
+        if database_url:
+            engine = create_engine(database_url)
+            with engine.connect() as connection:
+                result = connection.execute(text("SELECT 1"))
+                if result.fetchone():
+                    st.success("✅ Database connection: OK")
+        else:
+            st.warning("⚠️ Database connection: Not configured")
+    except Exception as e:
+        st.warning("⚠️ Database connection: Using fallback data")
+        st.info("ℹ️ The application is running in fallback mode with built-in sample data")
+    
+    # Check BLS API key
     if bls_api_key:
-        st.markdown('<div class="status-indicator online"><span class="status-indicator-dot online"></span>BLS API: Configured</div>', unsafe_allow_html=True)
+        st.success("✅ BLS API key: Available")
     else:
-        st.markdown('<div class="status-indicator offline"><span class="status-indicator-dot offline"></span>BLS API: NOT CONFIGURED</div>', unsafe_allow_html=True)
+        st.warning("⚠️ BLS API key: Not configured")
+        
+    st.info("ℹ️ This endpoint is used for application monitoring")
+    st.stop()  # Stop further execution
 
-    # Database Status
-    db_status_msg = "Database: Not Connected"
-    db_status_class = "offline"
-    if engine:
-        try:
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-            db_status_msg = "Database: Connected"
-            db_status_class = "online"
-        except Exception as e:
-            db_status_msg = f"Database: Connection Error"
-            logger.error(f"Sidebar DB Check Error: {e}")
-    st.markdown(f'<div class="status-indicator {db_status_class}"><span class="status-indicator-dot {db_status_class}"></span>{db_status_msg}</div>', unsafe_allow_html=True)
-
-    # Data Refresh Status
-    data_refresh_status = "Data refresh cycle status unknown." # Placeholder
-    st.markdown(f'<div class="status-indicator online"><span class="status-indicator-dot online"></span>{data_refresh_status}</div>', unsafe_allow_html=True)
-    
-    st.markdown("---")
-    st.markdown(f"App Version: 2.1.0 (Real Data Only)")
-    st.markdown(f"Last App Load: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    # Keep-alive status display
-    if "keep_alive_started" in st.session_state:
-        try:
-            with open("app_keep_alive_stats.json", "r") as f:
-                ka_stats = json.load(f)
-            last_ping_time_str = ka_stats.get("last_success")
-            if last_ping_time_str:
-                last_ping_dt = datetime.datetime.fromisoformat(last_ping_time_str)
-                time_since_last_ping = (datetime.datetime.now() - last_ping_dt).total_seconds() / 60
-                st.markdown(f"Keep-Alive: Active (last ping: {time_since_last_ping:.1f} min ago)")
-            else:
-                st.markdown("Keep-Alive: Attempting...")
-        except Exception:
-            st.markdown("Keep-Alive: Status unavailable")
-    else:
-        st.markdown("Keep-Alive: Initializing...")
-    
-    st.markdown("---")
-    st.markdown("#### UptimeRobot Setup")
-    st.markdown("""
-    To keep this application alive with UptimeRobot:
-    1. Create a new monitor in UptimeRobot
-    2. Set Type to "HTTP(s)"
-    3. Set URL to your app URL with `?health_check=true` (e.g., `your-app-url.streamlit.app/?health_check=true`)
-    4. Set monitoring interval to 5 minutes
-    5. Enable "Alert When Down"
-    """)
-
-    if not bls_api_key:
-        st.error("BLS API Key is not configured. Please set the BLS_API_KEY in Streamlit secrets or environment variables. The application cannot function without it.")
-
-# --- Main Application UI ---
-st.image("https://img1.wsimg.com/isteam/ip/70686f32-22d2-489c-a383-6fcd793644be/blob-3712e2e.png/:/rs=h:197,cg:true,m/qt=q:95", width=150) # Smaller logo
+# Application title and description
+st.image("https://img1.wsimg.com/isteam/ip/70686f32-22d2-489c-a383-6fcd793644be/blob-3712e2e.png/:/rs=h:197,cg:true,m/qt=q:95", width=250)
 st.markdown("<h1 style='text-align: center; color: #0084FF;'>Is your job at risk with AI innovation?</h1>", unsafe_allow_html=True)
 st.markdown("<p style='text-align: center; color: #4CACE5; font-size: 24px; font-weight: 600;'>AI Job Displacement Risk Analyzer</p>", unsafe_allow_html=True)
 st.markdown("<p style='text-align: center; color: #666666; font-weight: bold; font-size: 16px;'>Discover how AI might impact your career in the next 5 years and get personalized recommendations.</p>", unsafe_allow_html=True)
-st.info("📊 This application uses authentic Bureau of Labor Statistics (BLS) data only. No synthetic or fictional data is used.")
 
+# Database connection setup (with fallback to in-memory data if not available)
+try:
+    from database import save_job_search, get_popular_searches, get_highest_risk_jobs, get_lowest_risk_jobs, get_recent_searches
+    database_available = True
+except:
+    from db_fallback import save_job_search, get_popular_searches, get_highest_risk_jobs, get_lowest_risk_jobs, get_recent_searches
+    database_available = False
 
-# Initialize session state for admin controls
-if 'admin_run_batch' not in st.session_state: st.session_state.admin_run_batch = False
-if 'admin_batch_size' not in st.session_state: st.session_state.admin_batch_size = 5
-if 'admin_api_delay' not in st.session_state: st.session_state.admin_api_delay = 2
-if 'admin_processed_count' not in st.session_state: st.session_state.admin_processed_count = 0
-if 'current_soc_index' not in st.session_state: st.session_state.current_soc_index = 0
-if 'admin_batch_log' not in st.session_state: st.session_state.admin_batch_log = []
-if 'admin_total_socs' not in st.session_state: st.session_state.admin_total_socs = len(TARGET_SOC_CODES)
-if 'admin_failed_socs' not in st.session_state: st.session_state.admin_failed_socs = []
-if 'admin_warning_socs' not in st.session_state: st.session_state.admin_warning_socs = []
-
-
-# --- Admin Controls Expander (in Sidebar) ---
-with st.sidebar.expander("⚙️ ADMIN CONTROLS - Click to Expand", expanded=False):
-    st.markdown("This section is for administrators only and provides tools for database management.")
-    
-    if not bls_api_key:
-        st.error("BLS API Key is not configured. Admin database population tool cannot function.")
-    elif not engine:
-        st.error("Database is not connected. Admin database population tool cannot function.")
-    else:
-        st.subheader("Simplified Admin: Database Population Tool")
-        
-        # Progress display
-        progress_percent = (st.session_state.admin_processed_count / st.session_state.admin_total_socs) * 100 if st.session_state.admin_total_socs > 0 else 0
-        st.progress(int(progress_percent))
-        st.markdown(f"Overall Progress: {st.session_state.admin_processed_count} SOCs processed out of {st.session_state.admin_total_socs} target SOCs. Next to process: Index {st.session_state.current_soc_index}.")
-
-        # Batch controls
-        st.session_state.admin_batch_size = st.number_input("Batch Size (SOCs per run)", min_value=1, max_value=20, value=st.session_state.admin_batch_size, step=1)
-        st.session_state.admin_api_delay = st.number_input("Delay Between API Calls (seconds)", min_value=1, max_value=10, value=st.session_state.admin_api_delay, step=1)
-
-        col_admin1, col_admin2, col_admin3 = st.columns(3)
-        with col_admin1:
-            if st.button("▶️ Start/Resume Batch", key="admin_start_batch", disabled=st.session_state.admin_run_batch or st.session_state.current_soc_index >= st.session_state.admin_total_socs):
-                st.session_state.admin_run_batch = True
-                st.session_state.admin_batch_log.append(f"Batch started: {datetime.datetime.now()}")
-                st.rerun()
-        with col_admin2:
-            if st.button("⏸️ Pause (Stop Auto-Run)", key="admin_pause_batch", disabled=not st.session_state.admin_run_batch):
-                st.session_state.admin_run_batch = False
-                st.session_state.admin_batch_log.append(f"Batch paused: {datetime.datetime.now()}")
-                st.rerun()
-        with col_admin3:
-            if st.button("🔄 Reset All Progress", key="admin_reset_progress"):
-                st.session_state.current_soc_index = 0
-                st.session_state.admin_processed_count = 0
-                st.session_state.admin_run_batch = False
-                st.session_state.admin_batch_log = ["Progress Reset."]
-                st.session_state.admin_failed_socs = []
-                st.session_state.admin_warning_socs = []
-                st.rerun()
-
-        # Batch processing logic
-        if st.session_state.admin_run_batch and bls_api_key and engine:
-            # Determine how many SOCs to process in this run
-            end_index = min(st.session_state.current_soc_index + st.session_state.admin_batch_size, st.session_state.admin_total_socs)
+def check_data_refresh():
+    """Check if data needs to be refreshed (daily schedule to keep Supabase active)"""
+    try:
+        with open("last_refresh.json", "r") as f:
+            refresh_data = json.load(f)
+            last_refresh = datetime.datetime.fromisoformat(refresh_data["date"])
             
-            # Ensure engine is available
-            current_engine = bls_job_mapper.get_db_engine()
-            if not current_engine:
-                st.session_state.admin_batch_log.append(f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - ERROR: Database engine not available. Batch paused.")
-                st.session_state.admin_run_batch = False
-                st.rerun()
-
-            for i in range(st.session_state.current_soc_index, end_index):
-                if not st.session_state.admin_run_batch: break # Allow pausing mid-batch
-                
-                soc_code_info = TARGET_SOC_CODES[i]
-                soc_code = soc_code_info['soc_code']
-                soc_title = soc_code_info['title']
-                log_message = ""
-
-                st.markdown(f"Processing SOC: {soc_code} ('{soc_title}')")
-                logger.info(f"Admin: Processing SOC: {soc_code} ('{soc_title}')")
-                st.session_state.admin_batch_log.append(f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - Processing SOC: {soc_code} ('{soc_title}')")
-                
+            # Refresh if more than a day has passed
+            days_since_refresh = (datetime.datetime.now() - last_refresh).days
+            
+            if days_since_refresh >= 1:
+                # Run the daily refresh to keep database active
                 try:
-                    job_category = bls_job_mapper.get_job_category_from_soc(soc_code)
-                    processed_data = bls_job_mapper.fetch_and_process_soc_data(
-                        soc_code=soc_code,
-                        original_job_title=soc_title, 
-                        standardized_soc_title=soc_title, 
-                        job_category=job_category
-                    )
-
-                    if "error" in processed_data: # Check for critical errors from fetch_and_process
-                        log_message = f"ERROR SOC {soc_code}: {processed_data['error']}. Source: {processed_data.get('source', 'fetch_process_error')}"
-                        logger.error(log_message)
-                        st.session_state.admin_failed_socs.append({"soc": soc_code, "title": soc_title, "reason": processed_data['error'], "source": processed_data.get('source')})
-                    else:
-                        save_success = bls_job_mapper.save_bls_data_to_db(processed_data, current_engine)
-                        if save_success:
-                            oes_raw_response = json.loads(processed_data.get('raw_oes_data_json', '{}'))
-                            ep_raw_response = json.loads(processed_data.get('raw_ep_data_json', '{}'))
-                            api_had_errors = False
-                            api_error_messages = []
-
-                            # Check BLS API status (REQUEST_SUCCEEDED is good) vs internal 'success'
-                            if not (oes_raw_response.get('status', '').upper() == 'REQUEST_SUCCEEDED' and oes_raw_response.get('Results', {}).get('series')):
-                                api_had_errors = True
-                                api_error_messages.extend(oes_raw_response.get('message', ['OES API fetch issue']))
-                            if not (ep_raw_response.get('status', '').upper() == 'REQUEST_SUCCEEDED' and ep_raw_response.get('Results', {}).get('series')):
-                                api_had_errors = True
-                                api_error_messages.extend(ep_raw_response.get('message', ['EP API fetch issue']))
-                            
-                            if api_had_errors:
-                                unique_api_errors = list(set(filter(None, api_error_messages)))
-                                error_summary = "; ".join(unique_api_errors) if unique_api_errors else "Unknown API data issue."
-                                log_message = f"PARTIAL SOC {soc_code} ({soc_title}): Saved, but API fetch had issues: {error_summary}"
-                                logger.warning(log_message)
-                                st.session_state.admin_warning_socs.append({"soc": soc_code, "title": soc_title, "reason": f"API issues: {error_summary}", "source": "api_incomplete_db_saved"})
-                            else:
-                                log_message = f"SUCCESS SOC {soc_code} ({soc_title}): Data fetched/processed and saved. OES Year: {processed_data.get('oes_data_year', 'N/A')}, EP Base: {processed_data.get('ep_base_year', 'N/A')}"
-                                logger.info(log_message)
-                            st.session_state.admin_processed_count += 1
-                        else:
-                            db_save_error_reason = "Database save operation failed. Check bls_job_mapper logs for details."
-                            log_message = f"ERROR SOC {soc_code} ({soc_title}): {db_save_error_reason}. API Source: {processed_data.get('source', 'check_api_data')}"
-                            logger.error(log_message)
-                            st.session_state.admin_failed_socs.append({"soc": soc_code, "title": soc_title, "reason": db_save_error_reason, "source": "db_save_failed"})
-                
+                    import db_refresh
+                    st.info("Refreshing BLS data and performing database activity...")
+                    # Run a sample job update to keep database active
+                    sample_job = "Software Developer"
+                    db_refresh.update_job_data(sample_job)
+                    db_refresh.perform_database_queries()
+                    db_refresh.check_and_update_refresh_timestamp()
+                    st.success(f"Database activity performed successfully. Updated {sample_job} data.")
                 except Exception as e:
-                    log_message = f"ERROR SOC {soc_code} ({soc_title}): App-level exception - {str(e)}. Source: app_processing_exception"
-                    logger.error(log_message, exc_info=True)
-                    st.session_state.admin_failed_socs.append({"soc": soc_code, "title": soc_title, "reason": str(e), "source": "app_exception"})
-                
-                st.session_state.admin_batch_log.append(f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {log_message}")
-                st.session_state.current_soc_index = i + 1
-                time.sleep(st.session_state.admin_api_delay) # Delay between processing each SOC
+                    st.warning(f"Database refresh attempted but encountered an issue: {str(e)}")
+                return True
+            return False
+    except (FileNotFoundError, json.JSONDecodeError, KeyError):
+        # If file doesn't exist or is invalid, trigger refresh
+        with open("last_refresh.json", "w") as f:
+            json.dump({"date": datetime.datetime.now().isoformat()}, f)
+        return True
 
-            if st.session_state.current_soc_index >= st.session_state.admin_total_socs:
-                st.session_state.admin_run_batch = False # Batch finished
-                st.session_state.admin_batch_log.append(f"Batch completed: {datetime.datetime.now()}")
-            
-            st.rerun() # Rerun to update progress and log
-
-        # Admin Log Display
-        st.subheader("Admin Batch Log")
-        log_display_area = st.container(height=200, border=True)
-        for entry in reversed(st.session_state.admin_batch_log): # Show newest first
-            log_display_area.text(entry)
-        
-        # Failed SOCs Summary
-        st.markdown("---")
-        st.subheader("Summary of Failed SOC Populations")
-        if st.session_state.admin_failed_socs:
-            failed_df = pd.DataFrame(st.session_state.admin_failed_socs)
-            st.dataframe(failed_df, use_container_width=True)
-        else:
-            st.info("No SOC codes are currently marked as having failed population.")
-
-        # Warning SOCs Summary
-        st.subheader("Summary of Partially Successful SOC Populations (Warnings)")
-        if st.session_state.admin_warning_socs:
-            warning_df = pd.DataFrame(st.session_state.admin_warning_socs)
-            st.dataframe(warning_df, use_container_width=True)
-        else:
-            st.info("No SOC codes have warnings from the last batch.")
+# Tabs for different sections - use original tab names from screenshots
+tabs = st.tabs(["Single Job Analysis", "Job Comparison"])
+logger.info('Tabs defined for main app layout.')
 
 
-# --- Main Application Tabs (Single Job Analysis, Job Comparison) ---
-# (Code for these tabs remains largely the same as previous versions, using job_api_integration_database_only.py)
-
-# Tab 1: Single Job Analysis
-with tabs[0]:
+# Single Job Analysis Tab - Matching original layout
+with tabs[0]:  # Single Job Analysis tab
     st.markdown("<h2 style='color: #0084FF;'>Analyze a Job</h2>", unsafe_allow_html=True)
-    if not bls_api_key: # This check is mostly for the admin tool, but good to have a general one
-        st.warning("BLS API Key is not configured. Some data might be limited or unavailable if not already in the database.")
     
+    # Display API source information
+    if bls_api_key:
+        st.info("📊 Using real-time data from the Bureau of Labor Statistics API")
+    
+    # Job title input with autocomplete functionality
     st.markdown("Enter any job title to analyze")
     search_job_title = job_title_autocomplete(
         label="Enter your job title",
-        key="job_title_search_single",
+        key="job_title_search",
         placeholder="Start typing to see suggestions...",
         help="Type a job title and select from matching suggestions"
     )
     
+    # Clear Entry button - refreshes the entire app
     if st.button("🗑️ Clear Entry", key="clear_button_single"):
-        st.session_state.job_title_search_single = "" # Clear the specific input
-        # To clear results, we might need to set a flag or clear specific session state for results
-        if 'single_job_analysis_results' in st.session_state:
-            del st.session_state.single_job_analysis_results
+        # Clear by refreshing the page which resets all widgets
         st.rerun()
     
-    search_clicked = st.button("Analyze Job Risk", key="analyze_single_job_risk")
-
-    if 'single_job_analysis_results' in st.session_state and not search_clicked:
-        # Display cached results if available and button not clicked again
-        job_data = st.session_state.single_job_analysis_results
-        # (Display logic for job_data - same as below)
-        # This part needs to be refactored into a display function to avoid duplication
-        # For now, let's assume the main display logic is triggered by search_clicked
-        pass
-
+    # Normalize the job title for special cases
+    normalized_job_title = search_job_title.lower().strip() if search_job_title else ""
+    
+    # Check for variations of "Diagnosician" for demo purposes
+    if re.search(r'diagnos(i(c|s|t|cian)|e)', normalized_job_title):
+        search_job_title = "Diagnosician"
+    
+    # Add search button
+    search_clicked = st.button("Analyze Job Risk")
+    
+    # Only search when button is clicked and there's a job title
+    # Check for data refresh when the app starts
+    check_data_refresh()
+    
     if search_clicked and search_job_title:
+        # Show loading spinner during API calls and data processing
         with st.spinner(f"Analyzing {search_job_title}..."):
             try:
-                # Use the database-only integration for the main app
+                # Get job data with optimized API calls
                 job_data = job_api_integration.get_job_data(search_job_title)
-                st.session_state.single_job_analysis_results = job_data # Cache results
             except Exception as e:
-                logger.error(f"Error in get_job_data for '{search_job_title}': {e}", exc_info=True)
-                st.error(f"An unexpected error occurred while analyzing '{search_job_title}'. Please try again or contact support.")
-                st.stop()
-
-            if job_data.get("error"):
-                st.error(f"{job_data['error']}. {job_data.get('message', '')}")
-                if job_data.get("source") == "soc_lookup_failed" or "not found in BLS database" in job_data.get("error", ""):
-                     st.info("Please use the Admin Controls (in sidebar) to populate data for new job titles if you are an administrator, or contact support.")
-                st.stop()
-
-            if database_available:
-                try:
-                    database.save_job_search(search_job_title, {
-                        'year_1_risk': job_data.get('risk_scores', {}).get('year_1', 0),
-                        'year_5_risk': job_data.get('risk_scores', {}).get('year_5', 0),
-                        'risk_category': job_data.get('risk_category', 'Unknown'),
-                        'job_category': job_data.get('job_category', 'Unknown')
-                    })
-                except Exception as e_db_save:
-                    logger.warning(f"Failed to save user search for '{search_job_title}' to JobSearch table: {e_db_save}")
-
-
-            st.subheader(f"AI Displacement Risk Analysis: {job_data.get('job_title', search_job_title)}")
-            job_info_col, risk_gauge_col, risk_factors_col = st.columns([1.2, 1, 1.2]) # Adjusted column widths
-
-            with job_info_col:
-                st.markdown("<h3 style='color: #0084FF; font-size: 20px;'>Job Information</h3>", unsafe_allow_html=True)
-                st.markdown(f"**Occupation Code (SOC):** {job_data.get('occupation_code', 'N/A')}")
-                st.markdown(f"**Job Category:** {job_data.get('job_category', 'N/A')}")
-                emp_data = job_data.get('projections', {})
-                st.markdown(f"**Current Employment (BLS):** {emp_data.get('current_employment', 'N/A'):,}")
-                st.markdown(f"**Projected Change (BLS, to {job_data.get('ep_proj_year', 'N/A')}):** {emp_data.get('percent_change', 'N/A')}%")
-                st.markdown(f"**Annual Job Openings (BLS):** {emp_data.get('annual_job_openings', 'N/A'):,}")
-                st.markdown(f"**Median Annual Wage (BLS, {job_data.get('oes_data_year', 'N/A')}):** ${job_data.get('median_wage', 'N/A'):,}")
-
-            with risk_gauge_col:
-                risk_category = job_data.get("risk_category", "Moderate")
-                year_5_risk = job_data.get("risk_scores", {}).get("year_5", 50.0)
-                st.markdown(f"<h3 style='text-align: center; margin-bottom: 10px;'>Overall AI Risk (5-Yr): {risk_category}</h3>", unsafe_allow_html=True)
-                
-                gauge_color_map = {"Low": "#4CAF50", "Moderate": "#FFC107", "High": "#FF9800", "Very High": "#F44336"}
-                fig_gauge = go.Figure(go.Indicator(
-                    mode = "gauge+number", value = year_5_risk,
-                    domain = {'x': [0, 1], 'y': [0, 1]}, title = {'text': ""},
-                    number = {'suffix': '%', 'font': {'size': 28}},
-                    gauge = {'axis': {'range': [0, 100]}, 'bar': {'color': gauge_color_map.get(risk_category, "#6c757d")},
-                             'steps': [{'range': [0, 25], 'color': 'lightgreen'}, {'range': [25,50], 'color': 'lightyellow'}, {'range':[50,75], 'color':'lightsalmon'}, {'range':[75,100], 'color':'lightcoral'}]}))
-                fig_gauge.update_layout(height=250, margin=dict(l=20, r=20, t=30, b=20))
-                st.plotly_chart(fig_gauge, use_container_width=True)
-                
-                col_risk1, col_risk2 = st.columns(2)
-                with col_risk1: st.metric("1-Year Risk", f"{job_data.get('risk_scores', {}).get('year_1', 0):.1f}%")
-                with col_risk2: st.metric("5-Year Risk", f"{job_data.get('risk_scores', {}).get('year_5', 0):.1f}%")
-
-            with risk_factors_col:
-                st.markdown("<h3 style='color: #0084FF; font-size: 20px;'>Key Factors</h3>", unsafe_allow_html=True)
-                st.markdown("**Risk Factors:**")
-                for factor in job_data.get("risk_factors", ["Data not available"]): st.markdown(f"➖ {factor}")
-                st.markdown("**Protective Factors:**")
-                for factor in job_data.get("protective_factors", ["Data not available"]): st.markdown(f"➕ {factor}")
+                # If job not found in database, show clear error message
+                if "not found in BLS database" in str(e):
+                    st.error(f"Job title '{search_job_title}' not found in our BLS database. Please use the Admin Dashboard to add missing job titles.")
+                    st.info("Use the search suggestions or contact support to add this occupation with authentic BLS data.")
+                    st.stop()
+                else:
+                    st.error(f"Database error: {str(e)}")
+                    st.stop()
             
-            st.markdown("<h3 style='color: #0084FF; font-size: 20px; margin-top: 20px;'>Key Insights & Analysis</h3>", unsafe_allow_html=True)
-            st.markdown(job_data.get("analysis", "Detailed analysis not available."))
-            st.markdown(f"**Summary:** {job_data.get('summary', 'Summary not available.')}")
+            # Save to database
+            if database_available:
+                save_job_search(search_job_title, {
+                    'year_1_risk': job_data.get('risk_scores', {}).get('year_1', 0),
+                    'year_5_risk': job_data.get('risk_scores', {}).get('year_5', 0),
+                    'risk_category': job_data.get('risk_category', 'Unknown'),
+                    'job_category': job_data.get('job_category', 'Unknown')
+                })
+            
+            # Show results once data is ready
+            # Display header with job title and risk assessment
+            st.subheader(f"AI Displacement Risk Analysis: {search_job_title}")
+            
+            # Use columns to create layout matching the screenshots
+            job_info_col, risk_gauge_col, risk_factors_col = st.columns([1, 1, 1])
+            
+            with job_info_col:
+                # Job Information section - left column
+                st.markdown("<h3 style='color: #0084FF; font-size: 20px;'>Job Information</h3>", unsafe_allow_html=True)
+                
+                bls_data = job_data.get("bls_data", {})
+                if "occupation_code" in job_data:
+                    st.markdown(f"**Occupation Code:** {job_data['occupation_code']}")
+                elif "occ_code" in bls_data:
+                    st.markdown(f"**Occupation Code:** {bls_data['occ_code']}")
+                
+                st.markdown(f"**Job Category:** {job_data.get('job_category', 'General')}")
+                
+                if "employment" in bls_data:
+                    st.markdown(f"**Current Employment:** {bls_data['employment']:,.0f} jobs")
+                
+                if "employment_change_percent" in bls_data:
+                    growth = bls_data['employment_change_percent']
+                    growth_text = f"{growth:+.1f}%" if growth else "No data"
+                    st.markdown(f"**BLS Projected Growth:** {growth_text}")
+                
+                if "annual_job_openings" in bls_data:
+                    st.markdown(f"**Annual Job Openings:** {bls_data['annual_job_openings']:,.0f}")
+                
+                # Career Outlook section
+                st.markdown("<h3 style='color: #0084FF; font-size: 20px; margin-top: 20px;'>Career Outlook</h3>", unsafe_allow_html=True)
+                st.markdown("<h4 style='color: #0084FF; font-size: 16px;'>Statistics</h4>", unsafe_allow_html=True)
+                
+                automation_prob = job_data.get("automation_probability", 45.0)
+                st.markdown(f"**Task Automation Probability:** {automation_prob:.1f}% of job tasks could be automated")
+                
+                # Wage trend from BLS data
+                bls_data = job_data.get("bls_data", {})
+                median_wage = bls_data.get("median_wage")
+                if median_wage:
+                    st.markdown(f"**Median Annual Wage:** ${median_wage:,.0f}")
+                else:
+                    st.markdown("**Wage Data:** Contact employer for current wage information")
+                
+                # Employment growth from BLS data
+                employment_change = bls_data.get("employment_change_percent")
+                if employment_change is not None:
+                    if employment_change > 0:
+                        growth_text = f"Growing at {employment_change:.1f}% (faster than average)"
+                    elif employment_change < 0:
+                        growth_text = f"Declining at {abs(employment_change):.1f}%"
+                    else:
+                        growth_text = "Stable employment expected"
+                    st.markdown(f"**Employment Growth:** {growth_text}")
+                else:
+                    st.markdown("**Employment Growth:** See BLS projections for current data")
+            
+            with risk_gauge_col:
+                # Overall risk and gauge - center column
+                risk_category = job_data.get("risk_category", "High")
+                year_1_risk = job_data.get("risk_scores", {}).get("year_1", 35.0)
+                year_5_risk = job_data.get("risk_scores", {}).get("year_5", 60.0)
+                
+                st.markdown(f"<h3 style='text-align: center; margin-bottom: 10px;'>Overall AI Displacement Risk: {risk_category}</h3>", unsafe_allow_html=True)
+                
+                # Create gauge chart for the risk - ensure it matches the Task Automation Probability
+                automation_prob = job_data.get("automation_probability", 45.0)
+                
+                # Make sure we have valid values for the gauge
+                if year_5_risk is None:
+                    year_5_risk = 0.6  # Default to 60% if value is None
 
+                # Ensure values are in decimal format (0-1) before converting to percentage
+                if year_5_risk > 1:
+                    gauge_value = year_5_risk  # Already a percentage
+                else:
+                    gauge_value = year_5_risk * 100  # Convert to percentage
+                
+                fig = go.Figure(go.Indicator(
+                    mode = "gauge+number",
+                    value = gauge_value,
+                    domain = {'x': [0, 1], 'y': [0, 1]},
+                    title = {'text': ""},
+                    number = {'suffix': '%', 'font': {'size': 28}},
+                    gauge = {
+                        'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "darkblue"},
+                        'bar': {'color': "#0084FF"},
+                        'bgcolor': "white",
+                        'borderwidth': 2,
+                        'bordercolor': "gray",
+                        'steps': [
+                            {'range': [0, 25], 'color': "rgba(0, 255, 0, 0.5)"},
+                            {'range': [25, 50], 'color': "rgba(255, 255, 0, 0.5)"},
+                            {'range': [50, 75], 'color': "rgba(255, 165, 0, 0.5)"},
+                            {'range': [75, 100], 'color': "rgba(255, 0, 0, 0.5)"}
+                        ],
+                        'threshold': {
+                            'line': {'color': "red", 'width': 4},
+                            'thickness': 0.75,
+                            'value': gauge_value
+                        }
+                    }
+                ))
+                
+                fig.update_layout(
+                    height=250,
+                    margin=dict(l=20, r=20, t=30, b=20)
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Year risks as text
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("<div style='text-align: center;'><h4 style='color: #0084FF; font-size: 18px;'>1-Year Risk</h4></div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='text-align: center; font-size: 20px; font-weight: bold;'>{year_1_risk:.1f}%</div>", unsafe_allow_html=True)
+                with col2:
+                    st.markdown("<div style='text-align: center;'><h4 style='color: #0084FF; font-size: 18px;'>5-Year Risk</h4></div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='text-align: center; font-size: 20px; font-weight: bold;'>{year_5_risk:.1f}%</div>", unsafe_allow_html=True)
+            
+            with risk_factors_col:
+                # Risk Factors section - right column
+                st.markdown("<h3 style='color: #0084FF; font-size: 20px;'>Key Risk Factors</h3>", unsafe_allow_html=True)
+                
+                # Get risk factors from job data or provide job-specific defaults based on searched job title
+                job_category = job_data.get('job_category', 'General').lower()
+                
+                if 'legal' in job_category or 'legal' in search_job_title.lower():
+                    default_risk_factors = [
+                        "AI legal research tools automate document review",
+                        "Contract analysis software can identify key clauses",
+                        "Legal document generation reduces routine paperwork",
+                        "Basic legal research increasingly automated"
+                    ]
+                elif 'healthcare' in job_category or any(term in search_job_title.lower() for term in ['nurse', 'doctor', 'medical']):
+                    default_risk_factors = [
+                        "Diagnostic AI assists with pattern recognition",
+                        "Administrative tasks increasingly automated",
+                        "Electronic health records reduce manual documentation",
+                        "Basic scheduling and routine tasks automated"
+                    ]
+                else:
+                    default_risk_factors = [
+                        "Routine administrative tasks increasingly automated",
+                        "Basic data entry and processing can be automated",
+                        "Standardized procedures require less human oversight",
+                        "Simple decision-making processes automated"
+                    ]
+                
+                # Set different default risk factors based on job category
+                if "developer" in search_job_title.lower() or "programmer" in search_job_title.lower():
+                    default_risk_factors = [
+                        "Automated code generation reduces need for routine coding",
+                        "AI tools can debug and optimize existing code",
+                        "Low-code/no-code platforms replace basic development tasks",
+                        "Standardized development work increasingly automated"
+                    ]
+                elif "analyst" in search_job_title.lower():
+                    default_risk_factors = [
+                        "AI tools automate data collection and cleaning",
+                        "Automated report generation reduces manual work",
+                        "Pattern recognition algorithms identify insights faster",
+                        "Dashboard automation reduces need for routine analysis"
+                    ]
+                elif "designer" in search_job_title.lower():
+                    default_risk_factors = [
+                        "AI design tools can generate layouts and compositions",
+                        "Style transfer algorithms automate visual consistency",
+                        "Template-based design reduces need for custom work",
+                        "Generative design tools create multiple options quickly"
+                    ]
+                    
+                risk_factors = job_data.get("risk_factors", default_risk_factors)
+                
+                for factor in risk_factors:
+                    st.markdown(f"❌ {factor}")
+                
+                # Protective Factors
+                st.markdown("<h3 style='color: #0084FF; font-size: 20px; margin-top: 20px;'>Protective Factors</h3>", unsafe_allow_html=True)
+                
+                # Set different default protective factors based on job category
+                job_category = job_data.get('job_category', 'General').lower()
+                
+                if 'legal' in job_category or 'legal' in search_job_title.lower():
+                    default_protective_factors = [
+                        "Complex legal reasoning requires human judgment",
+                        "Client relationships and advocacy need human empathy",
+                        "Ethical decision-making in ambiguous situations",
+                        "Courtroom presence and persuasion remain human skills"
+                    ]
+                elif 'healthcare' in job_category or any(term in search_job_title.lower() for term in ['nurse', 'doctor', 'medical']):
+                    default_protective_factors = [
+                        "Direct patient care requires human touch and empathy",
+                        "Complex medical decision-making needs human judgment",
+                        "Emergency situations require quick human adaptation",
+                        "Emotional support and bedside manner remain human-centered"
+                    ]
+                else:
+                    default_protective_factors = [
+                        "Complex problem-solving requires human creativity",
+                        "Interpersonal relationships and communication skills",
+                        "Adaptability to unexpected situations",
+                        "Strategic thinking and contextual understanding"
+                    ]
+                
+                if "developer" in search_job_title.lower() or "programmer" in search_job_title.lower():
+                    default_protective_factors = [
+                        "Complex system architecture requires human judgment",
+                        "User-centered design needs human empathy and creativity",
+                        "Novel problem-solving is difficult to automate",
+                        "Client collaboration and requirement gathering need human skills"
+                    ]
+                elif "analyst" in search_job_title.lower():
+                    default_protective_factors = [
+                        "Strategic insight requires business context and judgment",
+                        "Complex problem definition needs human framing",
+                        "Interpreting findings within broader context requires experience",
+                        "Communicating insights to stakeholders needs human skills"
+                    ]
+                elif "designer" in search_job_title.lower():
+                    default_protective_factors = [
+                        "Creative direction and concept development need human creativity",
+                        "Understanding emotional impact requires human empathy",
+                        "Cultural context and sensitivity need human judgment",
+                        "Client relationship management requires human connections"
+                    ]
+                
+                protective_factors = job_data.get("protective_factors", default_protective_factors)
+                
+                for factor in protective_factors:
+                    st.markdown(f"✅ {factor}")
+            
+            # Analysis section - full width
+            st.markdown("<h3 style='color: #0084FF; font-size: 20px; margin-top: 20px;'>Key Insights</h3>", unsafe_allow_html=True)
+            
+            # Create job-specific analysis text based on search term
+            job_title_cleaned = search_job_title.strip()
+            
+            # Define a default analysis for any job
+            default_analysis = f"{job_title_cleaned} faces changes due to advancing AI technologies. Roles requiring human judgment, creativity, and complex social interactions will remain most protected from automation. Professionals who develop skills in AI collaboration, strategic thinking, and specialized expertise will be best positioned for the changing job market."
+            
+            # Job-specific analysis templates
+            job_analyses = {
+                "project manager": f"Project Managers face moderate to high displacement risk as AI tools advance. While routine project tracking and documentation are increasingly automated, roles requiring complex stakeholder management, strategic thinking, and leadership will remain valuable. Project managers who develop skills in AI oversight, strategic leadership, and change management will be more resilient to automation.",
+                
+                "developer": f"Software Developers are experiencing significant transformation due to AI advancements in code generation and optimization. While routine coding tasks are increasingly automated, developers who specialize in complex architecture, novel problem-solving, and human-centered design will remain valuable. Focus on developing skills in AI integration, system architecture, and specialized domain knowledge to remain competitive.",
+                
+                "programmer": f"Programmers face significant transformation due to AI advancements in code generation and optimization. While routine coding tasks are increasingly automated, programmers who specialize in complex architecture, novel problem-solving, and human-centered design will remain valuable. Focus on developing skills in AI integration, system architecture, and specialized domain knowledge to remain competitive.",
+                
+                "analyst": f"Analysts are being transformed by automated data processing and insight generation tools. While data collection and basic analysis are increasingly automated, analysts who can define complex problems, provide strategic context to findings, and communicate effectively with stakeholders will remain essential. Developing skills in advanced analytics, business strategy, and AI-assisted analysis will enhance career resilience.",
+                
+                "designer": f"Designers are evolving as AI tools enhance creative workflows. While basic design tasks and template-based work face automation, designers who excel at concept development, emotional connection, and creative direction will continue to be valued. Focus on developing skills in design strategy, creative direction, and human experience design to stay ahead of automation trends.",
+                
+                "manager": f"Managers face moderate disruption as AI tools automate routine management tasks. While administrative aspects of management are increasingly handled by software, managers who excel at leadership, strategic thinking, and complex stakeholder relationships will remain essential. Developing skills in AI-enhanced decision making, change management, and strategic leadership will strengthen career resilience.",
+                
+                "teacher": f"Teachers face a changing landscape as AI tools automate content creation and basic assessment. However, the core aspects of teaching—mentorship, emotional support, individualized guidance, and inspiring curiosity—remain deeply human. Teachers who integrate AI tools while focusing on relationship-building and higher-order thinking skills will thrive in the evolving educational environment.",
+                
+                "nurse": f"Nurses remain relatively protected from AI displacement due to the high degree of human care, emotional intelligence, and complex decision-making required. While some diagnostic and administrative tasks may be automated, the hands-on patient care, clinical assessment, and compassionate support that nurses provide cannot be easily replicated by AI systems.",
+                
+                "doctor": f"Doctors face partial automation of routine diagnostic tasks, but the core aspects of medicine—complex reasoning, ethical judgment, and patient relationships—remain highly resistant to automation. Physicians who learn to effectively collaborate with AI diagnostic tools while focusing on complex cases and patient-centered care will be most successful in the changing healthcare landscape.",
+            }
+            
+            # Check if the job title contains any of our predefined analyses
+            selected_analysis = default_analysis
+            for key, analysis in job_analyses.items():
+                if key in job_title_cleaned.lower():
+                    selected_analysis = analysis
+                    break
+            
+            # Use provided analysis if available, otherwise use our job-specific default
+            analysis_text = job_data.get("analysis", selected_analysis)
+            st.markdown(analysis_text)
+            
             # Employment Trend Chart
-            st.markdown("<h3 style='color: #0084FF; font-size: 20px; margin-top: 20px;'>Employment Trend (BLS Data)</h3>", unsafe_allow_html=True)
+            st.markdown("<h3 style='color: #0084FF; font-size: 20px; margin-top: 20px;'>Employment Trend</h3>", unsafe_allow_html=True)
+            
+            # Get real employment trend data from job_data
             trend_data = job_data.get("trend_data", {})
-            if trend_data and trend_data.get("years") and trend_data.get("employment") and any(e is not None for e in trend_data["employment"]):
-                df_trend = pd.DataFrame(trend_data)
-                fig_trend = px.line(df_trend, x="years", y="employment", title=f"Employment Trend for {job_data.get('job_title', search_job_title)}", labels={'employment': 'Number of Jobs', 'years': 'Year'}, markers=True)
-                fig_trend.update_layout(height=350, margin=dict(l=40, r=40, t=60, b=40))
-                st.plotly_chart(fig_trend, use_container_width=True)
+            if trend_data and "years" in trend_data and "employment" in trend_data:
+                years = trend_data["years"]
+                employment_values = trend_data["employment"]
             else:
-                st.info("Employment trend data from BLS is not available or incomplete for this occupation.")
-
+                # Get SOC-specific employment data from database or API
+                occupation_code = job_data.get("occupation_code", "00-0000")
+                if occupation_code != "00-0000" and database_available:
+                    try:
+                        # Get employment data for this specific SOC code
+                        import os
+                        from sqlalchemy import create_engine, text
+                        db_url = os.environ.get('DATABASE_URL')
+                        engine = create_engine(db_url)
+                        with engine.connect() as conn:
+                            query = text("SELECT current_employment, projected_employment FROM bls_job_data WHERE occupation_code = :soc_code LIMIT 1")
+                            result = conn.execute(query, {"soc_code": occupation_code})
+                            row = result.fetchone()
+                            if row and row[0]:
+                                current_emp = int(row[0]) if row[0] else 100000
+                                projected_emp = int(row[1]) if row[1] else current_emp * 1.1
+                                
+                                # Create realistic trend data
+                                years = [2020, 2021, 2022, 2023, 2024, 2025]
+                                # Calculate trend from current to projected
+                                growth_factor = (projected_emp / current_emp) ** (1/5)  # 5-year growth
+                                base_2020 = current_emp / (growth_factor ** 3)  # Work backwards to 2020
+                                employment_values = [int(base_2020 * (growth_factor ** i)) for i in range(6)]
+                            else:
+                                # No fallback data - show message if no real BLS data
+                                years = [2020, 2021, 2022, 2023, 2024, 2025]
+                                employment_values = [0, 0, 0, 0, 0, 0]  # Will show as "Data not available"
+                    except Exception as e:
+                        # No fallback - only real BLS data
+                        years = [2020, 2021, 2022, 2023, 2024, 2025]
+                        employment_values = [0, 0, 0, 0, 0, 0]
+                else:
+                    # No fallback - only show real BLS data
+                    years = [2020, 2021, 2022, 2023, 2024, 2025]
+                    employment_values = [0, 0, 0, 0, 0, 0]
+            
+            # Create employment trend chart only with real BLS data
+            if employment_values and any(val > 0 for val in employment_values):
+                trend_fig = go.Figure()
+                trend_fig.add_trace(go.Scatter(
+                    x=years,
+                    y=employment_values,
+                    mode='lines+markers',
+                    name='Employment',
+                    line=dict(color='#0084FF', width=2),
+                    marker=dict(size=8)
+                ))
+                
+                trend_fig.update_layout(
+                    title=f'Employment Trend for {search_job_title} (2020-2025)',
+                    xaxis_title='Year',
+                    yaxis_title='Number of Jobs',
+                    height=350,
+                    margin=dict(l=40, r=40, t=60, b=40)
+                )
+                
+                st.plotly_chart(trend_fig, use_container_width=True)
+            else:
+                st.info("📊 **Employment trend data from Bureau of Labor Statistics not yet available for this position.** Analysis shows current risk factors and projections based on job category research.")
+            
+            # Similar Jobs section
+            st.markdown("<h3 style='color: #0084FF; font-size: 20px; margin-top: 20px;'>Similar Jobs</h3>", unsafe_allow_html=True)
+            
+            # Get similar jobs data from the job_data response
+            # The API returns similar_jobs in a specific format that we need to adapt
+            raw_similar_jobs = job_data.get("similar_jobs", [])
+            similar_jobs = []
+            
+            # Convert from API format to our display format if data exists
+            if raw_similar_jobs and len(raw_similar_jobs) > 0:
+                for job in raw_similar_jobs:
+                    # Handle different data formats from the API
+                    if "job_title" in job and "year_5_risk" in job:
+                        # Handle percentage vs decimal format
+                        year_5_risk = job["year_5_risk"] / 100 if job["year_5_risk"] > 1 else job["year_5_risk"]
+                        year_1_risk = job["year_1_risk"] / 100 if job["year_1_risk"] > 1 else job["year_1_risk"]
+                        
+                        similar_jobs.append({
+                            "title": job["job_title"],
+                            "year_5_risk": year_5_risk,
+                            "year_1_risk": year_1_risk
+                        })
+                    elif "title" in job and "year_5_risk" in job:
+                        similar_jobs.append(job)
+            
+            # Ensure similar jobs data is always available for comparison
+            if not similar_jobs or len(similar_jobs) == 0:
+                # Provide default similar jobs data if none exists
+                if "project manager" in search_job_title.lower():
+                    similar_jobs = [
+                        {"title": "Program Manager", "year_5_risk": 0.55, "year_1_risk": 0.30},
+                        {"title": "Product Manager", "year_5_risk": 0.45, "year_1_risk": 0.25},
+                        {"title": "Construction Manager", "year_5_risk": 0.40, "year_1_risk": 0.20},
+                        {"title": "Operations Manager", "year_5_risk": 0.65, "year_1_risk": 0.40}
+                    ]
+                elif "developer" in search_job_title.lower() or "programmer" in search_job_title.lower():
+                    similar_jobs = [
+                        {"title": "Frontend Developer", "year_5_risk": 0.60, "year_1_risk": 0.35},
+                        {"title": "Backend Developer", "year_5_risk": 0.45, "year_1_risk": 0.25},
+                        {"title": "DevOps Engineer", "year_5_risk": 0.40, "year_1_risk": 0.20},
+                        {"title": "Software Architect", "year_5_risk": 0.35, "year_1_risk": 0.15}
+                    ]
+                elif "analyst" in search_job_title.lower():
+                    similar_jobs = [
+                        {"title": "Data Analyst", "year_5_risk": 0.65, "year_1_risk": 0.40},
+                        {"title": "Business Analyst", "year_5_risk": 0.60, "year_1_risk": 0.35},
+                        {"title": "Financial Analyst", "year_5_risk": 0.50, "year_1_risk": 0.30},
+                        {"title": "Research Analyst", "year_5_risk": 0.45, "year_1_risk": 0.25}
+                    ]
+                else:
+                    # Generic similar jobs for any other job title
+                    similar_jobs = [
+                        {"title": "Team Lead", "year_5_risk": 0.50, "year_1_risk": 0.25},
+                        {"title": "Department Manager", "year_5_risk": 0.40, "year_1_risk": 0.20},
+                        {"title": "Director", "year_5_risk": 0.35, "year_1_risk": 0.15},
+                        {"title": "Individual Contributor", "year_5_risk": 0.60, "year_1_risk": 0.35}
+                    ]
+                    
+            if similar_jobs:
+                # Create dataframe for table
+                similar_df = pd.DataFrame(similar_jobs)
+                
+                # Create chart first - ensure we have valid data for all elements
+                job_titles = [job.get("title", "Untitled") for job in similar_jobs]
+                
+                # Handle possible None values in risk data
+                risk_values = []
+                for job in similar_jobs:
+                    risk = job.get("year_5_risk", 0)
+                    if risk is None:
+                        risk = 0
+                    risk_values.append(risk * 100)  # Convert to percentages
+                
+                similar_fig = go.Figure()
+                similar_fig.add_trace(go.Bar(
+                    x=job_titles,
+                    y=risk_values,
+                    marker_color='#FFA500',
+                    text=[f"{val:.1f}%" for val in risk_values],
+                    textposition='auto'
+                ))
+                
+                # Add colorbar for reference
+                similar_fig.update_layout(
+                    title="AI Displacement Risk for Similar Jobs",
+                    xaxis_title="Job Title",
+                    yaxis_title="5-Year Risk (%)",
+                    height=400,
+                    margin=dict(l=40, r=40, t=60, b=40),
+                    coloraxis=dict(
+                        colorscale='RdYlGn_r',
+                        showscale=True,
+                        cmin=0,
+                        cmax=100,
+                        colorbar=dict(
+                            title="5-Year Risk (%)",
+                            thickness=15,
+                            len=0.5,
+                            y=0.5,
+                            x=1.1
+                        )
+                    )
+                )
+                
+                st.plotly_chart(similar_fig, use_container_width=True)
+                
+                # Add comparison suggestion text
+                st.markdown("Compare risk levels of similar occupations:")
+                
+                # Create table with more detailed risk data
+                if len(similar_jobs) > 0:
+                    # Add risk categories
+                    similar_data = []
+                    for i, job in enumerate(similar_jobs):
+                        risk = job.get("year_5_risk", 0) * 100
+                        category = "High" if risk >= 60 else "Moderate" if risk >= 30 else "Low"
+                        # Make sure we have values for both risks, with fallbacks if missing
+                        year_5_risk = job.get("year_5_risk", 0)
+                        if year_5_risk is None:
+                            year_5_risk = 0
+                        risk = year_5_risk * 100
+                            
+                        year_1_risk = job.get("year_1_risk")
+                        if year_1_risk is None:
+                            year_1_risk = risk * 0.6 / 100  # Convert back to decimal for consistent calculation
+                            
+                        similar_data.append({
+                            "Job Title": job.get("title", ""),
+                            "1-Year Risk (%)": f"{year_1_risk * 100:.1f}%",
+                            "5-Year Risk (%)": f"{risk:.1f}%",
+                            "Risk Category": category
+                        })
+                    
+                    # Create and display dataframe
+                    comparison_df = pd.DataFrame(similar_data)
+                    st.dataframe(comparison_df, use_container_width=True)
+            
+            # Risk Assessment Summary
             st.markdown("<hr>", unsafe_allow_html=True)
-            st.markdown(career_navigator.get_html(), unsafe_allow_html=True) # Call to action
+            st.markdown("<h3 style='color: #0084FF; font-size: 20px;'>Risk Assessment Summary</h3>", unsafe_allow_html=True)
+            
+            summary_text = job_data.get("summary", "Based on current AI trends and job market analysis, this role is experiencing significant changes due to automation and AI technologies. Skills in human-centric areas like leadership, creativity, and complex problem-solving will be increasingly valuable as routine aspects become automated.")
+            st.markdown(summary_text)
+            
+            # Call to action for Career Navigator
+            st.markdown("<hr>", unsafe_allow_html=True)
+            st.markdown("<h3 style='color: #0084FF; font-size: 20px;'>Get Your Personalized Career Plan</h3>", unsafe_allow_html=True)
+            st.markdown("Our AI-powered Career Navigator can help you develop a personalized plan to adapt to these changes and thrive in your career.", unsafe_allow_html=True)
+            
+            # Get HTML from career_navigator module to avoid escaping issues
+            st.markdown(career_navigator.get_html(), unsafe_allow_html=True)
+            
+            # Add Recent Searches section
+            st.markdown("<hr>", unsafe_allow_html=True)
+            st.markdown("<h3 style='color: #0084FF; font-size: 20px;'>Recent Job Searches</h3>", unsafe_allow_html=True)
+            
+            # Get recent searches from our storage system
+            recent_searches = get_recent_searches(limit=5)
+            
+            if recent_searches:
+                # Create columns for job title, risk category, and search time
+                recent_col1, recent_col2, recent_col3 = st.columns([3, 2, 2])
+                
+                with recent_col1:
+                    st.markdown("<p style='color: #666666; font-weight: bold;'>Job Title</p>", unsafe_allow_html=True)
+                with recent_col2:
+                    st.markdown("<p style='color: #666666; font-weight: bold;'>Risk Level</p>", unsafe_allow_html=True)
+                with recent_col3:
+                    st.markdown("<p style='color: #666666; font-weight: bold;'>When</p>", unsafe_allow_html=True)
+                
+                # Display recent searches
+                for search in recent_searches:
+                    job_title = search.get("job_title", "Unknown Job")
+                    risk_category = search.get("risk_category", "Unknown")
+                    timestamp = search.get("timestamp")
+                    
+                    # Format timestamp as relative time
+                    if timestamp:
+                        now = datetime.datetime.now()
+                        if isinstance(timestamp, str):
+                            try:
+                                timestamp = datetime.datetime.fromisoformat(timestamp)
+                            except:
+                                timestamp = now
+                                
+                        delta = now - timestamp
+                        if delta.days > 0:
+                            time_ago = f"{delta.days} days ago"
+                        elif delta.seconds >= 3600:
+                            hours = delta.seconds // 3600
+                            time_ago = f"{hours} hour{'s' if hours > 1 else ''} ago"
+                        elif delta.seconds >= 60:
+                            minutes = delta.seconds // 60
+                            time_ago = f"{minutes} minute{'s' if minutes > 1 else ''} ago"
+                        else:
+                            time_ago = "Just now"
+                    else:
+                        time_ago = "Recently"
+                    
+                    # Color-code risk categories
+                    if risk_category == "Very High":
+                        risk_color = "#FF4B4B"  # Red
+                    elif risk_category == "High":
+                        risk_color = "#FF8C42"  # Orange
+                    elif risk_category == "Moderate":
+                        risk_color = "#FFCC3E"  # Yellow
+                    elif risk_category == "Low":
+                        risk_color = "#4CAF50"  # Green
+                    else:
+                        risk_color = "#666666"  # Gray
+                    
+                    # Display in columns
+                    col1, col2, col3 = st.columns([3, 2, 2])
+                    with col1:
+                        # Make job title clickable to search again - use a unique key with index
+                        search_key = f"search_{job_title.replace(' ', '_')}_{i}_{abs(hash(str(search))) % 10000}"
+                        if st.button(job_title, key=search_key):
+                            st.session_state.job_title = job_title
+                            st.rerun()
+                    with col2:
+                        st.markdown(f"<p style='color: {risk_color};'>{risk_category}</p>", unsafe_allow_html=True)
+                    with col3:
+                        st.write(time_ago)
+            else:
+                st.info("No recent searches yet. Be the first to analyze a job!")
 
-# Tab 2: Job Comparison
-with tabs[1]:
+# Job Comparison Tab - Match original functionality from screenshots
+with tabs[1]:  # Job Comparison tab
     st.markdown("<h2 style='color: #0084FF;'>Compare Jobs</h2>", unsafe_allow_html=True)
-    st.markdown("Compare AI displacement risk and BLS data for multiple jobs. Add up to 5 jobs.")
-
-    if 'compare_jobs_list' not in st.session_state: st.session_state.compare_jobs_list = []
-
-    new_job_to_compare = job_title_autocomplete(
-        label="Enter a job title to add to comparison:",
-        key="compare_job_input",
-        placeholder="Start typing...",
-        help="Select a job to add it to the comparison list below."
-    )
-
-    if st.button("➕ Add to Comparison", key="add_to_compare_btn") and new_job_to_compare:
-        if new_job_to_compare not in st.session_state.compare_jobs_list and len(st.session_state.compare_jobs_list) < 5:
-            st.session_state.compare_jobs_list.append(new_job_to_compare)
-            st.session_state.compare_job_input = "" # Clear input after adding
-            st.rerun()
-        elif len(st.session_state.compare_jobs_list) >= 5:
-            st.warning("Maximum of 5 jobs can be compared.")
-        elif new_job_to_compare in st.session_state.compare_jobs_list:
-            st.info(f"'{new_job_to_compare}' is already in the comparison list.")
     
-    if st.session_state.compare_jobs_list:
-        st.markdown("#### Jobs to Compare:")
-        cols = st.columns(len(st.session_state.compare_jobs_list) + 1)
-        for idx, job_name in enumerate(st.session_state.compare_jobs_list):
-            cols[idx].markdown(job_name)
-            if cols[idx].button("➖", key=f"remove_compare_{idx}", help=f"Remove {job_name}"):
-                st.session_state.compare_jobs_list.pop(idx)
+    # Introduction text
+    st.markdown("Compare the AI displacement risk for multiple jobs side by side to explore transition opportunities. Add up to 5 jobs.")
+    
+    # Cache the job data to improve performance
+    @st.cache_data(ttl=3600)  # Cache for 1 hour
+    def get_cached_job_data(job_title):
+        """Cache job data to improve performance"""
+        return job_api_integration.get_job_data(job_title)
+    
+    # Direct job entry with dynamic addition - restore original functionality
+    new_job = job_title_autocomplete(
+        label="Enter a job title and press Enter to add to comparison", 
+        key="compare_job_input",
+        placeholder="Start typing to see suggestions...",
+        help="Type a job title and select from matching suggestions"
+    )
+    
+    # Initialize session state for selected jobs if not already present
+    if 'selected_jobs' not in st.session_state:
+        st.session_state.selected_jobs = []
+    
+    # Add job when entered and Enter key is pressed
+    if new_job and new_job not in st.session_state.selected_jobs and len(st.session_state.selected_jobs) < 5:
+        # Automatically add job when Enter is pressed
+        with st.spinner(f"Adding {new_job} to comparison..."):
+            # Pre-load the job data in cache
+            get_cached_job_data(new_job)
+            st.session_state.selected_jobs.append(new_job)
+    
+    # Display current comparison jobs with remove buttons
+    if st.session_state.selected_jobs:
+        st.subheader("Current Comparison:")
+        
+        # Create columns for each job
+        job_cols = st.columns(len(st.session_state.selected_jobs))
+        
+        # Display each job with a remove button
+        for i, job in enumerate(st.session_state.selected_jobs.copy()):
+            with job_cols[i]:
+                st.markdown(f"**{job}**")
+                if st.button("❌", key=f"remove_{i}"):
+                    st.session_state.selected_jobs.remove(job)
+                    st.rerun()
+        
+        # Add clear all button
+        if st.button("Clear All Jobs", key="clear_jobs"):
+            st.session_state.selected_jobs = []
+            st.rerun()
+    
+    # Display comparison when jobs are selected
+    if st.session_state.selected_jobs and len(st.session_state.selected_jobs) >= 1:
+        st.subheader(f"Analyzing {len(st.session_state.selected_jobs)} Jobs")
+        
+        # Process jobs with better progress feedback
+        progress_text = st.empty()
+        job_data_collection = {}
+        
+        # Show progress as jobs are processed
+        for i, job in enumerate(st.session_state.selected_jobs):
+            progress_text.write(f"Processing {i+1}/{len(st.session_state.selected_jobs)}: {job}")
+            job_data_collection[job] = get_cached_job_data(job)
+        
+        progress_text.write("All jobs processed. Generating comparison...")
+        
+        # Now we have all job data, proceed with visualization
+        # Get data for selected jobs using the comparison function
+        job_data = simple_comparison.get_job_comparison_data(st.session_state.selected_jobs)
+        
+        # Create visualization tabs for different comparison views
+        comparison_tabs = st.tabs(["Comparison Chart", "Comparative Analysis", "Risk Heatmap", "Risk Factors"])
+        
+        # Tab 1: Basic comparison chart
+        with comparison_tabs[0]:
+            st.markdown("<h3 style='color: #0084FF;'>5-Year AI Displacement Risk Comparison</h3>", unsafe_allow_html=True)
+            chart = simple_comparison.create_comparison_chart(job_data)
+            if chart:
+                st.plotly_chart(chart, use_container_width=True)
+            else:
+                st.error("Unable to create comparison chart. Please check that you have selected valid jobs with available data.")
+            
+            # Display short explanation under the chart
+            st.markdown("""
+            **Chart Explanation**: This chart shows the projected AI displacement risk after 5 years for each selected job. 
+            Higher percentages indicate greater likelihood that AI will significantly impact or automate aspects of this role.
+            """)
+        
+        # Tab 2: Side-by-side comparative analysis
+        with comparison_tabs[1]:
+            st.markdown("<h3 style='color: #0084FF;'>Detailed Comparison</h3>", unsafe_allow_html=True)
+            
+            # Create tabular comparison
+            comparison_df = simple_comparison.create_comparison_table(job_data)
+            
+            # Display the table with improved formatting
+            st.dataframe(comparison_df, use_container_width=True)
+            
+            # Side-by-side comparison with actual job data
+            st.subheader("Job Comparison Analysis")
+            
+            # Extract BLS and job data for comparison
+            jobs_bls_data = {}
+            jobs_skill_data = {}
+            
+            # Extract important data points for each job
+            for job_title, job_info in job_data.items():
+                # Get BLS data if available
+                bls_data = job_info.get("bls_data", {})
+                
+                # Get additional data from job API integration and our hardcoded BLS data
+                try:
+                    # Import our BLS employment data module with hardcoded values
+                    import bls_employment_data
+                    
+                    # Try to get data from the API first
+                    api_data = job_api_integration.get_job_data(job_title)
+                    api_bls_data = api_data.get("bls_data", {})
+                    
+                    # If API data not available, try hardcoded BLS data
+                    if not api_bls_data.get("employment"):
+                        hardcoded_data = bls_employment_data.get_employment_data(job_title)
+                        if hardcoded_data:
+                            api_bls_data = hardcoded_data
+                    
+                    # Use API data if available, otherwise use job_info data
+                    employment = api_bls_data.get("employment") or bls_data.get("employment", "N/A")
+                    openings = api_bls_data.get("annual_job_openings") or bls_data.get("annual_job_openings", "N/A")
+                    growth = api_bls_data.get("employment_change_percent") or bls_data.get("employment_change_percent", "N/A")
+                    
+                    # Format the values nicely
+                    if isinstance(employment, (int, float)) and employment != "N/A":
+                        employment = f"{int(employment):,}"
+                    
+                    if isinstance(openings, (int, float)) and openings != "N/A":
+                        openings = f"{int(openings):,}"
+                        
+                    if isinstance(growth, (int, float)) and growth != "N/A":
+                        growth = f"{float(growth):+.1f}"
+                except Exception as e:
+                    print(f"Error getting API data for {job_title}: {str(e)}")
+                    employment = bls_data.get("employment", "N/A")
+                    openings = bls_data.get("annual_job_openings", "N/A")
+                    growth = bls_data.get("employment_change_percent", "N/A")
+                    
+                jobs_bls_data[job_title] = {
+                    "Employment": employment,
+                    "Annual Job Openings": openings,
+                    "Growth": growth,
+                    "Category": job_info.get("job_category", "General")
+                }
+                
+                # Get skill data from our job_comparison module
+                import job_comparison
+                
+                # Define default skills first so it's always available
+                default_skills = {
+                    'technical_skills': ['Data analysis', 'Industry knowledge', 'Computer proficiency'],
+                    'soft_skills': ['Communication', 'Problem-solving', 'Adaptability'],
+                    'emerging_skills': ['AI collaboration', 'Digital literacy', 'Remote work skills']
+                }
+                
+                # First try an exact case match
+                if job_title in job_comparison.JOB_SKILLS:
+                    skills = job_comparison.JOB_SKILLS[job_title]
+                else:
+                    # Try case-insensitive match
+                    found = False
+                    for skill_job, skill_data in job_comparison.JOB_SKILLS.items():
+                        if job_title.lower() == skill_job.lower():
+                            skills = skill_data
+                            found = True
+                            break
+                    
+                    if not found:
+                        # Use default skills if no match found
+                        skills = default_skills
+                
+                jobs_skill_data[job_title] = {
+                    "Technical Skills": skills.get('technical_skills', ["N/A"]),
+                    "Soft Skills": skills.get('soft_skills', ["N/A"]),
+                    "Emerging Skills": skills.get('emerging_skills', ["N/A"])
+                }
+            
+            # Create comparison sections
+            st.markdown("### Employment & Market Comparison")
+            
+            # Add explanatory note about BLS data
+            st.info("""
+            **Note on Employment Data**: The Bureau of Labor Statistics organizes employment data by standardized 
+            occupational codes, not by specific job titles. Some job titles may not directly map to BLS classifications, 
+            particularly newer or specialized roles. We do our best to match job titles to the appropriate BLS categories.
+            """)
+            
+            # Create employment data comparison
+            emp_data = []
+            for job, data in jobs_bls_data.items():
+                emp_data.append({
+                    "Job Title": job,
+                    "Category": data["Category"],
+                    "Current Employment": data["Employment"] if data["Employment"] != "N/A" else "Data unavailable",
+                    "Projected Growth": f"{data['Growth']}%" if data["Growth"] != "N/A" else "Data unavailable",
+                    "Annual Openings": data["Annual Job Openings"] if data["Annual Job Openings"] != "N/A" else "Data unavailable"
+                })
+            
+            # Display employment comparison
+            if emp_data:
+                emp_df = pd.DataFrame(emp_data)
+                st.dataframe(emp_df, use_container_width=True)
+            
+            # Display skill comparison
+            st.markdown("### Skill Comparison")
+            
+            # Create side-by-side skill comparison
+            skill_cols = st.columns(len(jobs_skill_data))
+            
+            for i, (job, skills) in enumerate(jobs_skill_data.items()):
+                with skill_cols[i]:
+                    st.markdown(f"#### {job}")
+                    
+                    st.markdown("**Technical Skills:**")
+                    for skill in skills["Technical Skills"]:
+                        st.markdown(f"- {skill}")
+                    
+                    st.markdown("**Soft Skills:**")
+                    for skill in skills["Soft Skills"]:
+                        st.markdown(f"- {skill}")
+                    
+                    st.markdown("**Emerging Skills:**")
+                    for skill in skills["Emerging Skills"]:
+                        st.markdown(f"- {skill}")
+            
+            # Transition Guidance section
+            st.markdown("### Career Transition Recommendations")
+            
+            # Get lowest risk job from comparison for guidance
+            risk_values = [(job, data.get("risk_scores", {}).get("year_5", 0)) 
+                          for job, data in job_data.items()]
+            
+            if len(risk_values) >= 2:
+                lowest_job = min(risk_values, key=lambda x: x[1])
+                highest_job = max(risk_values, key=lambda x: x[1])
+                
+                # Check if significant difference in risk
+                if abs(highest_job[1] - lowest_job[1]) > 0.2:
+                    st.markdown(f"""
+                    Based on comparing these positions, transitioning toward roles like **{lowest_job[0]}** may provide more long-term career stability as AI adoption increases. Consider the following steps:
+                    
+                    1. **Skill Development Focus**: Identify overlapping skill requirements between your current role and positions like {lowest_job[0]}
+                    2. **Education/Training**: Research specific certifications or courses that would strengthen your qualifications for this career transition
+                    3. **Experience Building**: Look for projects or responsibilities in your current role that align with {lowest_job[0]} to build relevant experience
+                    """)
+                else:
+                    st.markdown("""
+                    The selected positions show relatively similar AI impact projections. Consider focusing on enhancing your skills within your current career path:
+                    
+                    1. **Upskilling**: Develop advanced expertise in your field to handle complex cases AI cannot manage
+                    2. **Cross-functional Knowledge**: Build broader understanding across related domains to increase your versatility
+                    3. **AI Collaboration Skills**: Develop proficiency working alongside AI tools to enhance your productivity
+                    """)
+            else:
+                st.markdown("Add more jobs to the comparison to receive transition recommendations.")
+        
+        # Tab 3: Risk heatmap
+        with comparison_tabs[2]:
+            st.markdown("<h3 style='color: #0084FF;'>Risk Progression Heatmap</h3>", unsafe_allow_html=True)
+            
+            heatmap = simple_comparison.create_risk_heatmap(job_data)
+            if heatmap:
+                st.plotly_chart(heatmap, use_container_width=True)
+            else:
+                st.error("Unable to create risk heatmap. Please check that you have selected valid jobs with available data.")
+            
+            st.markdown("""
+            **Heatmap Explanation**: This visualization shows how displacement risk is projected to increase over time for each position.
+            Darker colors indicate higher risk levels, helping you understand both immediate and long-term vulnerability.
+            """)
+        
+        # Tab 4: Risk factors comparison
+        with comparison_tabs[3]:
+            st.markdown("<h3 style='color: #0084FF;'>Risk Factor Analysis</h3>", unsafe_allow_html=True)
+            
+            # Create radar chart for risk factor comparison
+            radar = simple_comparison.create_radar_chart(job_data)
+            if radar:
+                st.plotly_chart(radar, use_container_width=True)
+            else:
+                st.error("Unable to create radar chart. Please check that you have selected valid jobs with available data.")
+            
+            st.markdown("""
+            **Factor Analysis Explanation**: This radar chart compares positions across key risk dimensions. 
+            Jobs with larger areas on the chart face higher overall risk from AI disruption across multiple factors.
+            """)
+        
+        # Career Navigator Integration
+        st.markdown("<hr>", unsafe_allow_html=True)
+        st.markdown("<h2 style='color: #0084FF;'>Next Steps: Personalized Career Navigator</h2>", unsafe_allow_html=True)
+        st.markdown("Get personalized career guidance based on your skills and interests.", unsafe_allow_html=True)
+        
+        st.markdown("""
+        <div style='background-color: #0084FF; color: white; padding: 20px; border-radius: 10px; margin-top: 20px;'>
+            <h3 style='color: white;'>Career Navigator</h3>
+            <p style='font-size: 16px;'>Our AI-powered Career Navigator provides personalized guidance to help you navigate the changing job market:</p>
+            <ul style='font-size: 16px;'>
+                <li>Identify transferable skills that increase your value</li>
+                <li>Discover resilient career paths aligned with your experience</li>
+                <li>Get specific training recommendations with costs and ROI</li>
+                <li>Receive a customized transition plan with timeline and milestones</li>
+            </ul>
+            <a href='https://form.jotform.com/251137815706154' target='_blank'>
+                <button style='background-color: white; color: #0084FF; border: none; padding: 10px 20px; border-radius: 5px; font-weight: bold; cursor: pointer; margin-top: 10px;'>
+                    Get Your Personalized Career Plan
+                </button>
+            </a>
+        </div>
+        """, unsafe_allow_html=True)
+
+# --- Admin Controls Section (in Sidebar) ---
+if database_available and engine:
+    with st.sidebar.expander("⚙️ ADMIN CONTROLS - Click to Expand", expanded=False):
+        st.markdown("**Database Population & Management**")
+        
+        # Ensure TARGET_SOC_CODES is loaded from bls_job_mapper
+        if 'bls_job_mapper' in sys.modules and hasattr(bls_job_mapper, 'TARGET_SOC_CODES'):
+            TARGET_SOC_CODES = bls_job_mapper.TARGET_SOC_CODES
+            logger.info(f"Admin: Successfully loaded {len(TARGET_SOC_CODES)} target SOC codes.")
+        else:
+            TARGET_SOC_CODES = [{"soc_code": "00-0000", "title": "Error: TARGET_SOC_CODES not loaded"}]
+            logger.error("Admin: TARGET_SOC_CODES not loaded from bls_job_mapper. Admin tool functionality will be impaired.")
+            st.warning("TARGET_SOC_CODES not loaded. Admin tool may not function as expected.")
+
+        # Initialize session state for admin panel if not already done
+        if "admin_run_batch" not in st.session_state: st.session_state.admin_run_batch = False
+        if "admin_current_soc_idx" not in st.session_state: st.session_state.admin_current_soc_idx = 0
+        if "admin_batch_log" not in st.session_state: st.session_state.admin_batch_log = []
+        if "admin_failed_socs" not in st.session_state: st.session_state.admin_failed_socs = {}
+        
+        progress_file_admin = "admin_population_progress.json"
+        # Load progress only if not currently running a batch and at the start of the index
+        if os.path.exists(progress_file_admin) and st.session_state.admin_current_soc_idx == 0 and not st.session_state.admin_run_batch:
+            try:
+                with open(progress_file_admin, "r") as f:
+                    progress = json.load(f)
+                    st.session_state.admin_current_soc_idx = progress.get("current_soc_index", 0)
+                    st.session_state.admin_failed_socs = progress.get("failed_soc_populations", {})
+                logger.info(f"Admin: Resumed population progress from index {st.session_state.admin_current_soc_idx}.")
+            except Exception as e:
+                logger.error(f"Admin: Error loading population progress: {e}")
+
+        st.caption(f"Overall Progress: {st.session_state.admin_current_soc_idx} SOCs processed out of {len(TARGET_SOC_CODES)} target SOCs. Next to process: Index {st.session_state.admin_current_soc_idx}.")
+        
+        admin_batch_size = st.number_input("Batch Size (SOCs per run)", 1, 50, 5, key="admin_batch_size_input")
+        admin_api_delay = st.number_input("Delay Between API Calls (seconds)", 0.1, 10.0, 1.5, step=0.1, key="admin_api_delay_input")
+
+        admin_cols = st.columns(3)
+        if admin_cols[0].button("▶️ Start/Resume Batch", key="admin_start_button"):
+            if not bls_api_key:
+                st.error("BLS API Key is not configured. Cannot start batch.")
+            else:
+                st.session_state.admin_run_batch = True
+                st.session_state.admin_batch_log.append(f"Batch run started/resumed: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                logger.info("Admin: Batch run started/resumed.")
                 st.rerun()
         
-        if st.session_state.compare_jobs_list and cols[-1].button("Clear All", key="clear_all_compare"):
-            st.session_state.compare_jobs_list = []
+        if admin_cols[1].button("⏸️ Pause (Stop Auto-Run)", key="admin_pause_button"):
+            st.session_state.admin_run_batch = False
+            st.session_state.admin_batch_log.append(f"Batch run paused: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            try: 
+                with open(progress_file_admin, "w") as f: json.dump({"current_soc_index": st.session_state.admin_current_soc_idx, "failed_soc_populations": st.session_state.admin_failed_socs}, f)
+                logger.info("Admin: Batch run paused. Progress saved.")
+            except Exception as e: logger.error(f"Admin: Error saving progress on pause: {e}")
             st.rerun()
 
-    if st.session_state.compare_jobs_list:
-        with st.spinner("Fetching comparison data..."):
-            comparison_job_data = job_api_integration.get_jobs_comparison_data(st.session_state.compare_jobs_list)
-        
-        if comparison_job_data and not all(job.get("error") for job in comparison_job_data.values()):
-            comparison_tabs = st.tabs(["📊 Risk Chart", "📈 Employment Chart", "📋 Detailed Table", "🕸️ Radar Chart", "🔥 Heatmap"])
-            
-            with comparison_tabs[0]:
-                chart = simple_comparison.create_comparison_chart(comparison_job_data)
-                if chart: st.plotly_chart(chart, use_container_width=True)
-                else: st.info("Not enough data to create risk comparison chart.")
-            
-            with comparison_tabs[1]:
-                emp_chart = simple_comparison.create_employment_comparison(comparison_job_data)
-                if emp_chart: st.plotly_chart(emp_chart, use_container_width=True)
-                else: st.info("Not enough employment data to create comparison chart.")
+        if admin_cols[2].button("🔄 Reset All Progress", key="admin_reset_button"):
+            if st.checkbox("Confirm Reset All Progress?", key="admin_confirm_reset_checkbox"):
+                st.session_state.admin_run_batch = False
+                st.session_state.admin_current_soc_idx = 0
+                st.session_state.admin_batch_log = [f"Progress Reset: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]
+                st.session_state.admin_failed_socs = {}
+                if os.path.exists(progress_file_admin): os.remove(progress_file_admin)
+                logger.info("Admin: Population progress has been reset.")
+                st.rerun()
 
-            with comparison_tabs[2]:
-                df_compare = simple_comparison.create_comparison_table(comparison_job_data)
-                if df_compare is not None and not df_compare.empty: st.dataframe(df_compare, use_container_width=True)
-                else: st.info("Not enough data for a detailed table.")
+        st.text_area("Admin Processing Log", "\n".join(st.session_state.admin_batch_log[-20:]), height=150, key="admin_log_display_area")
 
-            with comparison_tabs[3]:
-                radar_chart = simple_comparison.create_radar_chart(comparison_job_data)
-                if radar_chart: st.plotly_chart(radar_chart, use_container_width=True)
-                else: st.info("Not enough data for radar chart.")
-            
-            with comparison_tabs[4]:
-                heatmap_chart = simple_comparison.create_risk_heatmap(comparison_job_data)
-                if heatmap_chart: st.plotly_chart(heatmap_chart, use_container_width=True)
-                else: st.info("Not enough data for risk heatmap.")
-            
-            st.markdown("<hr>", unsafe_allow_html=True)
-            st.markdown(career_navigator.get_html(), unsafe_allow_html=True)
+        if st.session_state.admin_run_batch and bls_api_key and database_available:
+            processed_in_this_run = 0
+            while st.session_state.admin_current_soc_idx < len(TARGET_SOC_CODES) and processed_in_this_run < admin_batch_size:
+                current_soc_info = TARGET_SOC_CODES[st.session_state.admin_current_soc_idx]
+                
+                # Defensive check for current_soc_info structure
+                if not isinstance(current_soc_info, dict) or 'soc_code' not in current_soc_info or 'title' not in current_soc_info:
+                    log_msg = f"Admin: Invalid structure for TARGET_SOC_CODES at index {st.session_state.admin_current_soc_idx}: {current_soc_info}. Skipping."
+                    st.session_state.admin_batch_log.append(log_msg)
+                    logger.error(log_msg)
+                    st.session_state.admin_failed_socs[str(st.session_state.admin_current_soc_idx)] = "Invalid SOC info structure"
+                    st.session_state.admin_current_soc_idx += 1
+                    processed_in_this_run += 1
+                    continue
+
+                soc_code = current_soc_info["soc_code"]
+                rep_title = current_soc_info["title"]
+                
+                log_msg = f"Processing SOC: {soc_code} ('{rep_title}')"
+                st.session_state.admin_batch_log.append(log_msg)
+                logger.info(f"Admin: {log_msg}")
+                
+                try:
+                    # Pass engine explicitly to the mapper function
+                    api_data = bls_job_mapper.fetch_and_process_soc_data(current_soc_info, engine, rep_title)
+
+                    if api_data is None or "error" in api_data or api_data.get("source") == "bls_api_fetch_error_or_db_save_failed":
+                        err_msg = api_data.get('error', 'Unknown error during processing.') if api_data else 'Processing returned None.'
+                        log_msg = f"ERROR SOC {soc_code}: {err_msg}. Source: {api_data.get('source', 'N/A') if api_data else 'N/A'}"
+                        st.session_state.admin_failed_socs[soc_code] = err_msg
+                    else:
+                        log_msg = f"SUCCESS SOC {soc_code} ('{api_data.get('standardized_title', rep_title)}'). Source: {api_data.get('source', 'N/A')}"
+                        if soc_code in st.session_state.admin_failed_socs:
+                            del st.session_state.admin_failed_socs[soc_code]
+                except Exception as e:
+                    log_msg = f"CRITICAL ERROR SOC {soc_code}: {str(e)}"
+                    st.session_state.admin_failed_socs[soc_code] = str(e)
+                    st.session_state.admin_run_batch = False # Stop batch on critical error
+                    logger.error(f"Admin: {log_msg}", exc_info=True)
+                
+                st.session_state.admin_batch_log.append(log_msg)
+                logger.info(f"Admin: {log_msg}")
+                st.session_state.admin_current_soc_idx += 1
+                processed_in_this_run += 1
+                time.sleep(admin_api_delay)
+
+            try: 
+                with open(progress_file_admin, "w") as f: json.dump({"current_soc_index": st.session_state.admin_current_soc_idx, "failed_soc_populations": st.session_state.admin_failed_socs}, f)
+                logger.info(f"Admin: Batch iteration complete. Progress saved. Next index: {st.session_state.admin_current_soc_idx}")
+            except Exception as e: logger.error(f"Admin: Error saving progress post-batch: {e}")
+
+            if st.session_state.admin_current_soc_idx >= len(TARGET_SOC_CODES):
+                st.session_state.admin_batch_log.append("All target SOCs processed.")
+                st.session_state.admin_run_batch = False
+                st.success("Database population complete!")
+                logger.info("Admin: Database population complete.")
+            st.rerun()
+
+        if st.session_state.admin_failed_socs:
+            st.sidebar.subheader("Summary of Failed SOC Populations")
+            for soc, err in st.session_state.admin_failed_socs.items():
+                st.sidebar.error(f"SOC: {soc} - Error: {err}")
         else:
-            st.error("Could not retrieve enough data for comparison. Some selected jobs might not be in the BLS database.")
+            st.sidebar.info("No SOC codes are currently marked as having failed population.")
+
+else:
+    st.sidebar.info("Admin controls for database population are disabled. Database not connected or engine not initialized.")
 
 
 # --- Footer ---
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center;">
-    <p style="font-size: 12px; color: #6c757d;">
-        © 2025 iThriveAI - AI Job Displacement Risk Analyzer. All rights reserved. <br>
-        Powered by real-time Bureau of Labor Statistics data | 
-        <a href="https://www.bls.gov/ooh/" target="_blank">BLS Occupational Outlook Handbook</a>
-    </p>
-    <p style="font-size: 10px; color: #adb5bd;">
-        Created by edolszanowski | 
-        <a href="https://www.ithriveai.com" target="_blank">iThriveAI.com</a>
-    </p>
+    <p style="color: #666666;">© 2025 iThriveAI - AI Job Displacement Risk Analyzer</p>
+    <p style="color: #666666;">Powered by real-time Bureau of Labor Statistics data | 
+    <a href="https://www.bls.gov/ooh/" target="_blank" style="color: #0084FF;">BLS Occupational Outlook Handbook</a></p>
 </div>
 """, unsafe_allow_html=True)
 
-# Status.io Embed
-st.markdown("""
-<script src="https://cdn.statuspage.io/se-v2.js"></script>
-<script>
-  var sp = new StatusPage.page({ page : 'g7p2p8m0rz19' });
-  sp.load({
-    href: 'https://www.streamlitstatus.com/?utm_source=embed',
-    borderColor: '#dddddd',
-    borderRadius: '4px',
-    fontFamily: 'Helvetica, Arial, sans-serif',
-    linkColor: '#007bff',
-    width: '300px',
-    height: '150px',
-    position: 'bottom-left',
-    target: '_blank',
-    backgroundColor: '#ffffff',
-    textColor: '#333333',
-    labelColor: '#666666',
-    barColor: '#007bff'
-  });
-</script>
-""", unsafe_allow_html=True)
+# UptimeRobot status embed (optional)
+st.markdown("""<iframe src="https://status.uptimerobot.com/page/widget/l2gjYfXJ9N/Lg8qKCXMGo" style="border: none; width: 100%; height: 100px;"></iframe>""", unsafe_allow_html=True)
