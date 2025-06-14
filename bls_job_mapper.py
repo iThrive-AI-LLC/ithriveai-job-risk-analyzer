@@ -14,7 +14,7 @@ import logging
 from typing import Dict, Any, List, Optional, Tuple
 
 import pandas as pd
-from sqlalchemy import create_engine, text, Table, Column, Integer, String, Float, MetaData, inspect, Text
+from sqlalchemy import create_engine, text, Table, Column, Integer, String, Float, MetaData, inspect
 from sqlalchemy.exc import SQLAlchemyError
 
 # Attempt to import the custom BLS API connector
