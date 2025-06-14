@@ -14,7 +14,7 @@ import logging
 from typing import Dict, Any, List, Optional, Tuple
 
 import pandas as pd
-from sqlalchemy import create_engine, text, Table, Column, Integer, String, Float, MetaData, inspect
+from sqlalchemy import create_engine, text, Table, Column, Integer, String, Float, MetaData, inspect, Text # Added Text import
 from sqlalchemy.exc import SQLAlchemyError
 
 # Attempt to import the custom BLS API connector
@@ -37,8 +37,13 @@ except ImportError:
 
 # Configure logging
 logger = logging.getLogger(__name__)
-if not logger.handlers: # Ensure logger is configured
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+if not logger.handlers: # Ensure logger is configured more robustly
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO) # Set default level if not already set
+    logger.propagate = False # Prevent duplicate logs if root logger is also configured
 
 # --- Database Setup ---
 metadata = MetaData()
@@ -61,8 +66,8 @@ bls_job_data_table = Table(
     Column('ep_proj_year', String(4), nullable=True),   # Projection year for projections
     Column('raw_oes_data_json', Text, nullable=True), # Store raw OES API response
     Column('raw_ep_data_json', Text, nullable=True),  # Store raw EP API response
-    Column('last_api_fetch', String(20), nullable=False), # ISO datetime of last successful API fetch
-    Column('last_updated_in_db', String(20), nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()) # ISO datetime of DB record update
+    Column('last_api_fetch', String(30), nullable=False), # ISO datetime of last successful API fetch (increased length)
+    Column('last_updated_in_db', String(30), nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()) # ISO datetime of DB record update
 )
 
 def get_db_engine():
@@ -104,20 +109,20 @@ JOB_TITLE_TO_SOC: Dict[str, str] = {
     "web developer": "15-1254", "registered nurse": "29-1141", "nurse": "29-1141",
     "teacher": "25-2021", "elementary school teacher": "25-2021", "high school teacher": "25-2031",
     "lawyer": "23-1011", "attorney": "23-1011", "doctor": "29-1221", "physician": "29-1221",
-    "accountant": "13-2011", "project manager": "13-1199", # Changed from 11-3021 to 13-1199 (Proj Mgt Specialists)
+    "accountant": "13-2011", "project manager": "13-1199",
     "product manager": "11-2021", "marketing manager": "11-2021", "retail salesperson": "41-2031",
     "cashier": "41-2011", "customer service representative": "43-4051", "truck driver": "53-3032",
-    "receptionist": "43-4171", "data scientist": "15-2051", "data analyst": "15-2051", # Grouped Data Analyst with Data Scientist
+    "receptionist": "43-4171", "data scientist": "15-2051", "data analyst": "15-2051",
     "business analyst": "13-1111", "financial analyst": "13-2051", "human resources specialist": "13-1071",
     "graphic designer": "27-1024", "police officer": "33-3051", "chef": "35-1011", "cook": "35-2014",
     "waiter": "35-3031", "waitress": "35-3031", "janitor": "37-2011",
     "administrative assistant": "43-6011", "executive assistant": "43-6011",
     "dental hygienist": "29-1292", "electrician": "47-2111", "plumber": "47-2152",
     "carpenter": "47-2031", "construction worker": "47-2061", "mechanic": "49-3023",
-    "automotive mechanic": "49-3023", "taxi driver": "53-3054", "uber driver": "53-3054", # Grouped
+    "automotive mechanic": "49-3023", "taxi driver": "53-3054", "uber driver": "53-3054",
     "journalist": "27-3023", "reporter": "27-3023", "writer": "27-3042", "editor": "27-3041",
     "photographer": "27-4021", "court reporter": "23-2011", "stenographer": "23-2011",
-    "digital court reporter": "23-2011", "travel agent": "41-3041" # Corrected SOC for Travel Agents
+    "digital court reporter": "23-2011", "travel agent": "41-3041"
 }
 
 SOC_TO_CATEGORY: Dict[str, str] = {
@@ -135,7 +140,6 @@ SOC_TO_CATEGORY: Dict[str, str] = {
     "53-": "Transportation and Material Moving Occupations", "00-": "Generic or Unclassified"
 }
 
-# Base risk scores (0-100) for categories - informed estimates
 CATEGORY_BASE_RISK: Dict[str, int] = {
     "Management Occupations": 25, "Business and Financial Operations Occupations": 40,
     "Computer and Mathematical Occupations": 35, "Architecture and Engineering Occupations": 30,
@@ -171,7 +175,6 @@ def find_occupation_code(job_title: str, engine) -> Tuple[Optional[str], str, st
 
     if soc_code:
         category = get_job_category(soc_code)
-        # Try to get a more official title from DB if this SOC is already cached
         try:
             with engine.connect() as conn:
                 res = conn.execute(text("SELECT standardized_title FROM bls_job_data WHERE occupation_code = :soc LIMIT 1"), {"soc": soc_code}).fetchone()
@@ -182,7 +185,6 @@ def find_occupation_code(job_title: str, engine) -> Tuple[Optional[str], str, st
         logger.info(f"Found SOC '{soc_code}' for '{std_input_title}' via hardcoded map. Official: '{official_title_for_soc}'. Category: {category}")
         return soc_code, official_title_for_soc, category
 
-    # If not in hardcoded map, try searching DB cache by original or standardized title
     try:
         with engine.connect() as conn:
             query = text("""
@@ -199,17 +201,14 @@ def find_occupation_code(job_title: str, engine) -> Tuple[Optional[str], str, st
     except SQLAlchemyError as e:
         logger.warning(f"DB error during find_occupation_code for '{std_input_title}': {e}")
 
-    # If still not found, use bls_connector.search_occupations (placeholder in connector context)
-    # In a real scenario, this would hit an API or a comprehensive local SOC list.
     logger.info(f"'{std_input_title}' not in map or cache, trying bls_connector.search_occupations.")
-    matches = bls_connector.search_occupations(job_title) # Use original job_title for search
+    matches = bls_connector.search_occupations(job_title) 
     if matches:
-        best_match = matches[0] # Assuming first is best
+        best_match = matches[0] 
         soc_code = best_match["code"]
-        official_title_for_soc = best_match["title"] # This is the official title from search
+        official_title_for_soc = best_match["title"] 
         category = get_job_category(soc_code)
         logger.info(f"Found SOC '{soc_code}' for '{job_title}' via bls_connector.search. Official: '{official_title_for_soc}'. Category: {category}")
-        # Optionally, cache this new mapping if desired (e.g., in a separate job_title_aliases table)
         return soc_code, official_title_for_soc, category
 
     logger.warning(f"Could not find SOC code for job title: '{job_title}'. Assigning generic code.")
@@ -226,15 +225,19 @@ def get_bls_data_from_db(occupation_code: str, engine) -> Optional[Dict[str, Any
                 data = dict(row._mapping) # type: ignore
                 last_fetch_str = data.get("last_api_fetch")
                 if last_fetch_str:
-                    last_fetch_date = datetime.datetime.fromisoformat(last_fetch_str)
-                    if (datetime.datetime.now(datetime.timezone.utc) - last_fetch_date).days < DATA_STALENESS_THRESHOLD_DAYS:
-                        logger.info(f"Found fresh cached BLS data in DB for SOC {occupation_code}.")
-                        # Deserialize JSON fields
-                        data['raw_oes_data_json'] = json.loads(data['raw_oes_data_json']) if data.get('raw_oes_data_json') else None
-                        data['raw_ep_data_json'] = json.loads(data['raw_ep_data_json']) if data.get('raw_ep_data_json') else None
-                        return data
-                    else:
-                        logger.info(f"Cached data for SOC {occupation_code} is stale (older than {DATA_STALENESS_THRESHOLD_DAYS} days).")
+                    try:
+                        last_fetch_date = datetime.datetime.fromisoformat(last_fetch_str.replace("Z", "+00:00"))
+                        if last_fetch_date.tzinfo is None: # If no timezone, assume UTC
+                             last_fetch_date = last_fetch_date.replace(tzinfo=datetime.timezone.utc)
+                        if (datetime.datetime.now(datetime.timezone.utc) - last_fetch_date).days < DATA_STALENESS_THRESHOLD_DAYS:
+                            logger.info(f"Found fresh cached BLS data in DB for SOC {occupation_code}.")
+                            data['raw_oes_data_json'] = json.loads(data['raw_oes_data_json']) if data.get('raw_oes_data_json') else None
+                            data['raw_ep_data_json'] = json.loads(data['raw_ep_data_json']) if data.get('raw_ep_data_json') else None
+                            return data
+                        else:
+                            logger.info(f"Cached data for SOC {occupation_code} is stale (older than {DATA_STALENESS_THRESHOLD_DAYS} days).")
+                    except ValueError as ve:
+                        logger.error(f"Error parsing last_api_fetch timestamp '{last_fetch_str}' for SOC {occupation_code}: {ve}")
                 else:
                     logger.warning(f"last_api_fetch timestamp missing for SOC {occupation_code} in DB.")
     except SQLAlchemyError as e:
@@ -247,35 +250,70 @@ def save_bls_data_to_db(data: Dict[str, Any], engine) -> bool:
     """Saves or updates BLS data in the database."""
     required_keys = ["occupation_code", "job_title", "standardized_title", "last_api_fetch"]
     if not all(key in data for key in required_keys):
-        logger.error(f"Missing required keys for saving to DB. Data: {data.keys()}")
+        logger.error(f"Missing required keys for saving to DB. Data keys: {list(data.keys())}. Required: {required_keys}")
         return False
 
-    # Ensure JSON fields are strings
     data_to_save = data.copy()
-    if data_to_save.get('raw_oes_data_json') is not None and not isinstance(data_to_save['raw_oes_data_json'], str):
-        data_to_save['raw_oes_data_json'] = json.dumps(data_to_save['raw_oes_data_json'])
-    if data_to_save.get('raw_ep_data_json') is not None and not isinstance(data_to_save['raw_ep_data_json'], str):
-        data_to_save['raw_ep_data_json'] = json.dumps(data_to_save['raw_ep_data_json'])
-    
+    # Ensure JSON fields are strings
+    for json_field in ['raw_oes_data_json', 'raw_ep_data_json']:
+        if data_to_save.get(json_field) is not None and not isinstance(data_to_save[json_field], str):
+            try:
+                data_to_save[json_field] = json.dumps(data_to_save[json_field])
+            except TypeError as te:
+                logger.error(f"Error serializing {json_field} to JSON for SOC {data_to_save.get('occupation_code')}: {te}. Data: {data_to_save[json_field]}")
+                data_to_save[json_field] = json.dumps({"error": "serialization_failed", "original_type": str(type(data_to_save[json_field]))})
+
+
     data_to_save['last_updated_in_db'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    
+    # Log keys being saved and perceived DB schema
+    logger.info(f"Attempting to save/update SOC {data_to_save.get('occupation_code')}.")
+    logger.info(f"Keys in data_to_save for SOC {data_to_save.get('occupation_code')}: {list(data_to_save.keys())}")
+    try:
+        inspector = inspect(engine)
+        db_columns = [col['name'] for col in inspector.get_columns('bls_job_data')]
+        logger.info(f"Perceived columns in 'bls_job_data' from DB for SOC {data_to_save.get('occupation_code')}: {db_columns}")
+    except Exception as inspect_e:
+        logger.error(f"Could not inspect DB columns for SOC {data_to_save.get('occupation_code')}: {inspect_e}")
+
+    # Filter data_to_save to only include keys that are actual columns in bls_job_data_table
+    # This is a more robust way to prevent UndefinedColumn errors if new fields are added to `data`
+    # but not yet to the DB schema or the SQLAlchemy Table object.
+    valid_column_names = {col.name for col in bls_job_data_table.columns}
+    filtered_data_to_save = {k: v for k, v in data_to_save.items() if k in valid_column_names}
+    
+    missing_in_model_but_in_data = set(data_to_save.keys()) - valid_column_names
+    if missing_in_model_but_in_data:
+        logger.warning(f"SOC {data_to_save.get('occupation_code')}: Keys in data_to_save but not in SQLAlchemy model for bls_job_data_table: {missing_in_model_but_in_data}. These will be ignored.")
 
     try:
         with engine.connect() as conn:
-            # Check if record exists
-            exists = conn.execute(text("SELECT 1 FROM bls_job_data WHERE occupation_code = :occupation_code"),
-                                  {"occupation_code": data['occupation_code']}).fetchone()
+            exists_query = text("SELECT id FROM bls_job_data WHERE occupation_code = :occupation_code")
+            exists = conn.execute(exists_query, {"occupation_code": filtered_data_to_save['occupation_code']}).fetchone()
+            
             if exists:
-                stmt = bls_job_data_table.update().where(bls_job_data_table.c.occupation_code == data['occupation_code']).values(**data_to_save)
-                logger.info(f"Updating existing BLS data in DB for SOC {data['occupation_code']}.")
+                # Ensure primary key 'id' is not in the values to be updated
+                update_values = filtered_data_to_save.copy()
+                update_values.pop('id', None) # Remove id if present, as it's not updatable
+                
+                stmt = bls_job_data_table.update().where(bls_job_data_table.c.occupation_code == filtered_data_to_save['occupation_code']).values(**update_values)
+                logger.info(f"Updating existing BLS data in DB for SOC {filtered_data_to_save['occupation_code']}.")
             else:
-                stmt = bls_job_data_table.insert().values(**data_to_save)
-                logger.info(f"Inserting new BLS data into DB for SOC {data['occupation_code']}.")
+                # Ensure primary key 'id' is not in values for insert if it's auto-incrementing
+                insert_values = filtered_data_to_save.copy()
+                insert_values.pop('id', None) 
+
+                stmt = bls_job_data_table.insert().values(**insert_values)
+                logger.info(f"Inserting new BLS data into DB for SOC {filtered_data_to_save['occupation_code']}.")
+            
             conn.execute(stmt)
             conn.commit()
+            logger.info(f"Successfully saved/updated data for SOC {filtered_data_to_save['occupation_code']}.")
             return True
-    except SQLAlchemyError as e:
-        logger.error(f"DB error saving data for SOC {data['occupation_code']}: {e}", exc_info=True)
-        # conn.rollback() # Handled by context manager
+    except SQLAlchemyError as e: # Catch specific SQLAlchemy errors
+        logger.error(f"DB error saving data for SOC {filtered_data_to_save.get('occupation_code', 'UNKNOWN_SOC')}: {e}", exc_info=True)
+    except Exception as e_general: # Catch any other unexpected errors
+        logger.error(f"General error saving data for SOC {filtered_data_to_save.get('occupation_code', 'UNKNOWN_SOC')}: {e_general}", exc_info=True)
     return False
 
 def _parse_oes_api_response(oes_response: Dict[str, Any], soc_code: str) -> Dict[str, Any]:
@@ -286,7 +324,6 @@ def _parse_oes_api_response(oes_response: Dict[str, Any], soc_code: str) -> Dict
         parsed["median_wage"] = oes_data.get("annual_median_wage")
         parsed["mean_wage"] = oes_data.get("annual_mean_wage")
         parsed["current_employment"] = oes_data.get("employment")
-        # Assuming OES data is annual, find the latest year.
         if oes_data.get("employment_trend"):
             latest_employment_year_data = max(oes_data["employment_trend"], key=lambda x: x.get("year", "0"), default=None)
             if latest_employment_year_data:
@@ -298,54 +335,57 @@ def _parse_oes_api_response(oes_response: Dict[str, Any], soc_code: str) -> Dict
 def _fetch_ep_data_series(soc_code_no_hyphen: str, engine) -> Dict[str, Any]:
     """
     Attempts to fetch Employment Projections (EP) data using illustrative series IDs.
-    This is a placeholder for a more robust EP series ID construction logic.
     """
-    # Illustrative EP Series IDs (these are examples and may need adjustment based on current BLS EP tables)
-    # EPU<SOC>001311 - Base employment
-    # EPU<SOC>001321 - Projected employment
-    # EPU<SOC>001331 - Employment change, numeric
-    # EPU<SOC>001341 - Employment change, percent
-    # EPU<SOC>001371 - Occupational openings
     ep_series_suffixes = {
-        "ep_base_employment": "001311",
-        "ep_projected_employment": "001321",
-        "ep_employment_change_numeric": "001331",
-        "ep_employment_change_percent": "001341",
+        "ep_base_employment": "001311", "ep_projected_employment": "001321",
+        "ep_employment_change_numeric": "001331", "ep_employment_change_percent": "001341",
         "ep_annual_job_openings": "001371"
     }
     series_ids_to_fetch = [f"EPU{soc_code_no_hyphen}{suffix}" for suffix in ep_series_suffixes.values()]
     
-    # Determine projection years (typically a 10-year span, e.g., 2022-2032)
-    # This needs to align with the latest BLS EP release. For now, use a recent typical span.
-    # Ideally, this would be dynamically determined.
-    current_year = datetime.datetime.now().year
-    proj_start_year = str(current_year - 2) # Example: if 2024, use 2022 as base
-    proj_end_year = str(current_year + 8)   # Example: if 2024, use 2032 as projection
+    current_year = datetime.datetime.now(datetime.timezone.utc).year
+    # BLS projections are typically for a 10-year period, e.g., 2022-2032, 2023-2033.
+    # We need the latest available full projection period.
+    # For simplicity, let's assume the API call will get the relevant period.
+    # A more robust way would be to query metadata or know the current projection span.
+    proj_start_year = str(current_year - 2) # Approximate base year
+    proj_end_year = str(current_year + 8)   # Approximate projection end year
 
     logger.info(f"Attempting to fetch EP data for SOC {soc_code_no_hyphen} with series: {series_ids_to_fetch} for years {proj_start_year}-{proj_end_year}")
     
     ep_raw_response = bls_connector.get_bls_data(series_ids_to_fetch, proj_start_year, proj_end_year)
     
-    ep_data = {"raw_ep_data_json": ep_raw_response} # Store the raw response
+    ep_data = {"raw_ep_data_json": ep_raw_response} 
     if ep_raw_response.get("status") == "REQUEST_SUCCEEDED":
         logger.info(f"EP API call for SOC {soc_code_no_hyphen} succeeded (may still have no data for specific series).")
         for series_result in ep_raw_response.get("Results", {}).get("series", []):
             series_id = series_result.get("seriesID")
             data_points = series_result.get("data")
-            if data_points: # Take the first (latest) data point value
-                value_str = data_points[0].get("value")
+            if data_points: 
+                latest_data_point = sorted(data_points, key=lambda x: x.get("year"), reverse=True)[0]
+                value_str = latest_data_point.get("value")
+                year_val = latest_data_point.get("year")
+                period_val = latest_data_point.get("period")
+
                 try:
                     value = float(value_str) if '.' in value_str else int(value_str)
-                    # Map back from series ID suffix to a meaningful key
                     for key, suffix in ep_series_suffixes.items():
                         if series_id.endswith(suffix):
                             ep_data[key] = value
                             # Try to get base and projection years from data if possible
-                            ep_data["ep_base_year"] = data_points[0].get("year") # Assuming first point is base
-                            ep_data["ep_proj_year"] = data_points[0].get("year") # This needs better logic for proj year
+                            # This logic is tricky as series might have different year structures
+                            if "base" in key and year_val: ep_data["ep_base_year"] = year_val
+                            if "projected" in key and year_val: ep_data["ep_proj_year"] = year_val # This might not be the final projection year
                             break
                 except (ValueError, TypeError) as e:
                     logger.warning(f"Could not parse value '{value_str}' for EP series {series_id}: {e}")
+        # Attempt to determine a single base and projection year if possible
+        if not ep_data.get("ep_base_year") and any(dp.get("year") for s in ep_raw_response.get("Results", {}).get("series", []) for dp in s.get("data",[])):
+            ep_data["ep_base_year"] = min(dp.get("year") for s in ep_raw_response.get("Results", {}).get("series", []) for dp in s.get("data",[]) if dp.get("year"))
+        if not ep_data.get("ep_proj_year") and any(dp.get("year") for s in ep_raw_response.get("Results", {}).get("series", []) for dp in s.get("data",[])):
+            # This is still a guess, actual projection year is usually fixed for a release
+            ep_data["ep_proj_year"] = max(dp.get("year") for s in ep_raw_response.get("Results", {}).get("series", []) for dp in s.get("data",[]) if dp.get("year"))
+
     else:
         logger.warning(f"EP data fetch failed for SOC {soc_code_no_hyphen}: {ep_raw_response.get('message', 'No message')}")
     return ep_data
@@ -355,36 +395,34 @@ def fetch_and_store_bls_data(job_title_searched: str, occupation_code: str, stan
     """Fetches data from BLS API (OES and EP), combines, and stores it in DB."""
     logger.info(f"Fetching new BLS data from API for SOC {occupation_code} ('{standardized_soc_title}').")
     
+    db_entry: Dict[str, Any] = {} # Initialize with an empty dictionary
+    
     # 1. Fetch OES Data (Employment, Wages)
     oes_response = bls_connector.get_occupation_data(occupation_code)
-    db_entry = _parse_oes_api_response(oes_response, occupation_code)
-    db_entry["raw_oes_data_json"] = oes_response # Store raw OES response
+    parsed_oes_data = _parse_oes_api_response(oes_response, occupation_code)
+    db_entry.update(parsed_oes_data)
+    db_entry["raw_oes_data_json"] = oes_response
 
     # 2. Fetch Employment Projections (EP) Data
     soc_code_no_hyphen = occupation_code.replace("-", "")
-    if len(soc_code_no_hyphen) == 6: # Valid for EP series construction
+    if len(soc_code_no_hyphen) == 6:
         ep_data_fetched = _fetch_ep_data_series(soc_code_no_hyphen, engine)
-        # Merge fetched EP data into db_entry
         db_entry["projected_employment"] = ep_data_fetched.get("ep_projected_employment")
         db_entry["employment_change_numeric"] = ep_data_fetched.get("ep_employment_change_numeric")
         db_entry["percent_change"] = ep_data_fetched.get("ep_employment_change_percent")
         db_entry["annual_job_openings"] = ep_data_fetched.get("ep_annual_job_openings")
         db_entry["ep_base_year"] = ep_data_fetched.get("ep_base_year")
         db_entry["ep_proj_year"] = ep_data_fetched.get("ep_proj_year")
-        db_entry["raw_ep_data_json"] = ep_data_fetched.get("raw_ep_data_json") # Store raw EP response
+        db_entry["raw_ep_data_json"] = ep_data_fetched.get("raw_ep_data_json")
     else:
         logger.warning(f"SOC code {occupation_code} not valid for EP series construction. Skipping EP data fetch.")
 
-    # Consolidate current_employment: OES latest is usually more up-to-date for "current"
-    # EP base year employment might be older. If OES current_employment is missing, consider EP base.
     if db_entry.get("current_employment") is None and ep_data_fetched.get("ep_base_employment") is not None:
         db_entry["current_employment"] = ep_data_fetched["ep_base_employment"]
         logger.info(f"Using EP base employment as current_employment for SOC {occupation_code} as OES current was missing.")
 
-
-    # Finalize common fields for DB
     db_entry["occupation_code"] = occupation_code
-    db_entry["job_title"] = job_title_searched # The title user actually searched for
+    db_entry["job_title"] = job_title_searched 
     db_entry["standardized_title"] = standardized_soc_title
     db_entry["job_category"] = job_category
     db_entry["last_api_fetch"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -394,82 +432,69 @@ def fetch_and_store_bls_data(job_title_searched: str, occupation_code: str, stan
         return db_entry
     else:
         logger.error(f"Failed to save fetched BLS data for SOC {occupation_code} to DB.")
-        # Return the fetched data anyway, but indicate it's not from DB cache
         db_entry["_db_save_failed"] = True 
         return db_entry
 
 def _generate_dynamic_risk_factors(job_category: str, bls_data: Dict[str, Any]) -> List[str]:
     factors = []
-    # Generic
     factors.append("Routine and predictable tasks are susceptible to AI-driven automation.")
-    # Category-specific
     if job_category == "Office and Administrative Support Occupations":
         factors.append("Data entry, scheduling, and document processing are increasingly automated by AI tools.")
     elif job_category == "Computer and Mathematical Occupations":
         factors.append("AI-assisted code generation and data analysis tools are becoming more prevalent.")
     elif job_category == "Production Occupations":
         factors.append("Robotics and AI in manufacturing are automating assembly and quality control tasks.")
-    # Data-driven
     pc = bls_data.get("percent_change")
     if pc is not None and pc < 0:
         factors.append(f"BLS projects a {pc:.1f}% decline in employment, potentially exacerbated by AI adoption.")
-    elif pc is not None and pc < 5: # Slow growth
+    elif pc is not None and pc < 5: 
         factors.append(f"Slow projected employment growth ({pc:.1f}%) may offer limited new opportunities as AI evolves.")
-    
-    return factors[:4] # Max 4 factors
+    return factors[:4]
 
 def _generate_dynamic_protective_factors(job_category: str, bls_data: Dict[str, Any]) -> List[str]:
     factors = []
-    # Generic
     factors.append("Complex problem-solving, critical thinking, and creativity remain strong human advantages.")
     factors.append("Interpersonal skills, emotional intelligence, and effective communication are hard to automate.")
-    # Category-specific
     if job_category == "Healthcare Practitioners and Technical Occupations":
         factors.append("Direct patient care, empathy, and complex diagnostic judgment require human expertise.")
     elif job_category == "Educational Instruction and Library Occupations":
         factors.append("Mentorship, fostering critical thinking, and adapting to diverse student needs are key human roles.")
     elif job_category == "Management Occupations":
         factors.append("Strategic decision-making, leadership, and managing complex human dynamics are vital.")
-    # Data-driven
     pc = bls_data.get("percent_change")
     ao = bls_data.get("annual_job_openings")
-    if pc is not None and pc > 10: # Strong growth
+    ce = bls_data.get("current_employment")
+    if pc is not None and pc > 10: 
         factors.append(f"Strong BLS projected growth ({pc:.1f}%) indicates robust demand for this occupation.")
-    if ao is not None and ao > (bls_data.get("current_employment", 0) * 0.05): # High turnover/openings
+    if ao is not None and ce is not None and ce > 0 and (ao / ce) > 0.05 : # High turnover/openings relative to size
         factors.append(f"A high number of annual job openings ({ao:,}) suggests ongoing opportunities.")
-        
-    return factors[:4] # Max 4 factors
+    return factors[:4]
 
 def calculate_ai_risk(job_title: str, job_category: str, bls_data: Dict[str, Any]) -> Dict[str, Any]:
     """Calculates AI risk based on category and BLS data."""
-    base_risk = CATEGORY_BASE_RISK.get(job_category, 45) # Default base risk
+    base_risk = CATEGORY_BASE_RISK.get(job_category, 45) 
     
-    # Modifier for projected percent change (PC)
     pc_modifier = 0
     pc = bls_data.get("percent_change")
     if pc is not None:
-        if pc > 15: pc_modifier = -15      # Very strong growth
-        elif pc > 5: pc_modifier = -10     # Strong growth
-        elif pc > 0: pc_modifier = -5      # Moderate growth
-        elif pc < -15: pc_modifier = +15   # Very strong decline
-        elif pc < -5: pc_modifier = +10    # Strong decline
-        elif pc < 0: pc_modifier = +5      # Moderate decline
+        if pc > 15: pc_modifier = -15      
+        elif pc > 5: pc_modifier = -10     
+        elif pc > 0: pc_modifier = -5      
+        elif pc < -15: pc_modifier = +15   
+        elif pc < -5: pc_modifier = +10    
+        elif pc < 0: pc_modifier = +5      
         
-    # Modifier for median wage (MW) - higher wage often implies more complex, less automatable tasks
     mw_modifier = 0
     mw = bls_data.get("median_wage")
-    # Assuming national median wage around $50-60k for context. This should be dynamic if possible.
     if mw is not None:
-        if mw > 100000: mw_modifier = -10   # High wage
-        elif mw > 70000: mw_modifier = -5   # Above average
-        elif mw < 40000: mw_modifier = +10  # Low wage
-        elif mw < 55000: mw_modifier = +5   # Below average
+        if mw > 100000: mw_modifier = -10   
+        elif mw > 70000: mw_modifier = -5   
+        elif mw < 40000: mw_modifier = +10  
+        elif mw < 55000: mw_modifier = +5   
 
-    year_5_risk = min(max(base_risk + pc_modifier + mw_modifier, 5), 95) # Clamp between 5% and 95%
+    year_5_risk = min(max(base_risk + pc_modifier + mw_modifier, 5), 95) 
     
-    # 1-year risk is a fraction of 5-year, more influenced by current tech state (base_risk reflects this partly)
-    # For simplicity, let's use a factor, but this could be more nuanced.
-    year_1_risk_factor = 0.4 + (base_risk / 250) # Ranges roughly 0.4 to 0.8
+    year_1_risk_factor = 0.4 + (base_risk / 250) 
     year_1_risk = round(year_5_risk * year_1_risk_factor, 1)
     year_5_risk = round(year_5_risk, 1)
 
@@ -485,14 +510,14 @@ def calculate_ai_risk(job_title: str, job_category: str, bls_data: Dict[str, Any
     if pc is not None:
         analysis_parts.append(f"BLS projects an employment change of {pc:.1f}% for this occupation group by {bls_data.get('ep_proj_year', 'the projection year')}.")
     if mw is not None:
-        analysis_parts.append(f"The median annual wage is approximately ${mw:,.0f} (as of {bls_data.get('oes_data_year', 'latest OES data')}).")
+        analysis_parts.append(f"The median annual wage is approximately ${int(mw):,} (as of {bls_data.get('oes_data_year', 'latest OES data')}).")
     
     analysis_parts.append("Factors influencing this assessment include general automation trends for the category, BLS employment projections, and wage levels.")
     if risk_category in ["High", "Very High"]:
         analysis_parts.append("Roles with significant routine tasks, lower complexity, or in sectors with rapid AI adoption face higher risks. Upskilling and focusing on uniquely human skills is advised.")
     elif risk_category == "Moderate":
         analysis_parts.append("This occupation will likely see changes due to AI, with some tasks being automated. Continuous learning and adaptation are important.")
-    else: # Low
+    else: 
         analysis_parts.append("This occupation appears relatively resilient to AI displacement in the near term, likely due to its reliance on complex human judgment, creativity, or interpersonal skills.")
 
     return {
@@ -507,8 +532,8 @@ def calculate_ai_risk(job_title: str, job_category: str, bls_data: Dict[str, Any
 def get_complete_job_data(job_title: str) -> Dict[str, Any]:
     """Main public function to get comprehensive job data (BLS stats + AI risk)."""
     try:
-        engine = get_db_engine() # Get engine instance
-    except ValueError as e: # Raised if DATABASE_URL is not configured
+        engine = get_db_engine() 
+    except ValueError as e: 
         logger.critical(f"Cannot proceed with get_complete_job_data: {e}")
         return {"error": str(e), "job_title": job_title, "source": "system_error_db_config"}
 
@@ -522,7 +547,6 @@ def get_complete_job_data(job_title: str) -> Dict[str, Any]:
             "source": "error_soc_mapping"
         }
 
-    # Try to get from DB first
     bls_data = get_bls_data_from_db(occupation_code, engine)
     source = "bls_database_cache"
 
@@ -530,11 +554,11 @@ def get_complete_job_data(job_title: str) -> Dict[str, Any]:
         logger.info(f"No fresh cache for SOC {occupation_code}. Fetching from BLS API.")
         bls_data = fetch_and_store_bls_data(job_title, occupation_code, standardized_soc_title, job_category, engine)
         source = "bls_api_live"
-        if not bls_data or "_db_save_failed" in bls_data : # If fetch or save failed
+        if not bls_data or "_db_save_failed" in bls_data : 
             source = "bls_api_fetch_error_or_db_save_failed"
 
 
-    if not bls_data: # If fetch_and_store also failed to return data
+    if not bls_data: 
         logger.error(f"Failed to obtain BLS data for SOC {occupation_code} ('{job_title}') from API.")
         return {
             "error": f"Unable to fetch required BLS data for occupation {standardized_soc_title} (SOC: {occupation_code}). The BLS API might be temporarily unavailable or the occupation data may be limited.",
@@ -542,23 +566,19 @@ def get_complete_job_data(job_title: str) -> Dict[str, Any]:
             "source": "error_bls_api_fetch"
         }
 
-    # Calculate AI risk using the fetched BLS data
     ai_risk_assessment = calculate_ai_risk(standardized_soc_title, job_category, bls_data)
 
-    # Combine all data into the final structure
-    # Ensure all keys expected by job_api_integration_database_only.py and app_production.py are present
-    # The bls_data dict from DB/API should already contain most BLS fields.
     complete_data = {
         "job_title": standardized_soc_title,
         "occupation_code": occupation_code,
         "job_category": job_category,
         "source": source,
-        "employment": bls_data.get("current_employment"), # Direct access for app
-        "projected_employment": bls_data.get("projected_employment"), # Direct access
-        "employment_change_percent": bls_data.get("percent_change"), # Direct access
-        "annual_job_openings": bls_data.get("annual_job_openings"), # Direct access
-        "median_wage": bls_data.get("median_wage"), # Direct access
-        "bls_data": { # Nested for potential future expansion, but provide direct access too
+        "employment": bls_data.get("current_employment"), 
+        "projected_employment": bls_data.get("projected_employment"), 
+        "employment_change_percent": bls_data.get("percent_change"), 
+        "annual_job_openings": bls_data.get("annual_job_openings"), 
+        "median_wage": bls_data.get("median_wage"), 
+        "bls_data": { 
             "occupation_code": occupation_code,
             "standardized_title": standardized_soc_title,
             "job_category": job_category,
@@ -572,18 +592,16 @@ def get_complete_job_data(job_title: str) -> Dict[str, Any]:
             "oes_data_year": bls_data.get("oes_data_year"),
             "ep_base_year": bls_data.get("ep_base_year"),
             "ep_proj_year": bls_data.get("ep_proj_year"),
-            "raw_oes_data_json": bls_data.get("raw_oes_data_json"), # For debugging or advanced use
-            "raw_ep_data_json": bls_data.get("raw_ep_data_json")   # For debugging or advanced use
+            "raw_oes_data_json": bls_data.get("raw_oes_data_json"), 
+            "raw_ep_data_json": bls_data.get("raw_ep_data_json")  
         },
-        "last_updated": bls_data.get("last_api_fetch"), # When data was fetched from BLS
-        **ai_risk_assessment # Merges all keys from risk assessment
+        "last_updated": bls_data.get("last_api_fetch"), 
+        **ai_risk_assessment 
     }
     return complete_data
 
 
 if __name__ == '__main__':
-    # Example usage for testing this module directly
-    # Ensure DATABASE_URL and BLS_API_KEY are set in your environment for this to work.
     logger.info("Running bls_job_mapper.py direct tests...")
     
     test_titles = ["Software Developer", "Registered Nurse", "Truck Driver", "NonExistentJobXYZ123", "Accountant", "Chief Executive"]
@@ -602,7 +620,6 @@ if __name__ == '__main__':
                 logger.info(f"  AI Risk: 1Y={data['year_1_risk']}%, 5Y={data['year_5_risk']}% ({data['risk_category']})")
                 logger.info(f"  Risk Factors: {data['risk_factors']}")
                 logger.info(f"  Protective Factors: {data['protective_factors']}")
-                # logger.info(f"  Analysis: {data['analysis']}") # Can be long
         except Exception as e:
             logger.error(f"Critical exception during test for '{title}': {e}", exc_info=True)
 
