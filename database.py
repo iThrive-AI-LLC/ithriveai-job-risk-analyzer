@@ -67,6 +67,7 @@ def create_db_engine(url: str, max_retries: int = MAX_RETRIES) -> Optional[sqlal
     """
     Create database engine with retry logic and optimized connection pooling.
     """
+    logger.info(f"Attempting to create database engine with URL: {url}") # Logging line as requested
     retry_count = 0
     last_error: Optional[Exception] = None
     
