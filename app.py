@@ -583,7 +583,7 @@ if database_available and engine:
                 
                 st.session_state.admin_batch_log.append(log_msg)
                 logger.info(f"Admin: {log_msg}")
-                st.session_state.current_soc_index += 1
+                st.session_state.admin_current_soc_idx += 1
                 processed_in_this_run += 1
                 time.sleep(admin_api_delay)
 
