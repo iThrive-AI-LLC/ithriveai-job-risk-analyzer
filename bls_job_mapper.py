@@ -51,6 +51,64 @@ if not logger.handlers:
     logger.setLevel(os.environ.get("LOG_LEVEL", "INFO").upper())
     logger.propagate = False
 
+# Target SOC codes for the admin database population tool
+TARGET_SOC_CODES: List[Tuple[str, str]] = [
+    ("11-1011", "Chief Executives"),
+    ("11-2021", "Marketing Managers"),
+    ("11-3021", "Computer and Information Systems Managers"),
+    ("11-9111", "Medical and Health Services Managers"),
+    ("13-1111", "Management Analysts"),
+    ("13-2011", "Accountants and Auditors"),
+    ("13-2051", "Financial Analysts"),
+    ("15-1211", "Computer Systems Analysts"),
+    ("15-1231", "Computer Network Support Specialists"),
+    ("15-1244", "Network and Computer Systems Administrators"),
+    ("15-1251", "Computer Programmers"),
+    ("15-1252", "Software Developers"),
+    ("15-1254", "Web Developers"),
+    ("15-2051", "Data Scientists"),
+    ("17-2071", "Electrical Engineers"),
+    ("17-2141", "Mechanical Engineers"),
+    ("19-1021", "Biochemists and Biophysicists"),
+    ("21-1021", "Child, Family, and School Social Workers"),
+    ("23-1011", "Lawyers"),
+    ("23-2011", "Paralegals and Legal Assistants"), # Also relevant for Court Reporters
+    ("25-2021", "Elementary School Teachers, Except Special Education"),
+    ("25-2031", "Secondary School Teachers, Except Special and Career/Technical Education"),
+    ("25-4022", "Librarians and Media Collections Specialists"),
+    ("27-1011", "Art Directors"),
+    ("27-1024", "Graphic Designers"),
+    ("27-3023", "News Analysts, Reporters, and Journalists"),
+    ("27-3042", "Technical Writers"),
+    ("27-4021", "Photographers"),
+    ("29-1021", "Dentists, General"),
+    ("29-1062", "Family Medicine Physicians"),
+    ("29-1141", "Registered Nurses"),
+    ("29-1292", "Dental Hygienists"),
+    ("31-1131", "Home Health Aides"),
+    ("33-3051", "Police and Sheriff's Patrol Officers"),
+    ("35-1011", "Chefs and Head Cooks"),
+    ("35-2014", "Cooks, Restaurant"),
+    ("35-3031", "Waiters and Waitresses"),
+    ("37-2011", "Janitors and Cleaners, Except Maids and Housekeeping Cleaners"),
+    ("39-5012", "Hairdressers, Hairstylists, and Cosmetologists"),
+    ("41-1011", "First-Line Supervisors of Retail Sales Workers"),
+    ("41-2011", "Cashiers"),
+    ("41-2031", "Retail Salespersons"),
+    ("41-4012", "Sales Representatives, Wholesale and Manufacturing, Except Technical and Scientific Products"), # Old SOC for Travel Agent
+    ("43-1011", "First-Line Supervisors of Office and Administrative Support Workers"),
+    ("43-4051", "Customer Service Representatives"),
+    ("43-6011", "Executive Secretaries and Executive Administrative Assistants"),
+    ("43-9021", "Data Entry Keyers"),
+    ("47-2031", "Carpenters"),
+    ("47-2111", "Electricians"),
+    ("49-3023", "Automotive Service Technicians and Mechanics"),
+    ("51-2092", "Team Assemblers"),
+    ("53-3032", "Heavy and Tractor-Trailer Truck Drivers"),
+    ("53-7062", "Laborers and Freight, Stock, and Material Movers, Hand")
+]
+
+
 # --- Database Setup ---
 metadata = MetaData()
 bls_job_data_table = Table(
@@ -72,8 +130,8 @@ bls_job_data_table = Table(
     Column('ep_proj_year', String(4), nullable=True),
     Column('raw_oes_data_json', Text, nullable=True),
     Column('raw_ep_data_json', Text, nullable=True),
-    Column('last_api_fetch', String(10), nullable=False),
-    Column('last_updated', String(10), nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d'))
+    Column('last_api_fetch', String(10), nullable=False), # Storing as YYYY-MM-DD string
+    Column('last_updated', String(10), nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')) # Storing as YYYY-MM-DD string
 )
 
 _engine_instance: Optional[sqlalchemy.engine.Engine] = None
@@ -90,7 +148,7 @@ def get_db_engine(force_new: bool = False) -> sqlalchemy.engine.Engine:
                     import streamlit as st # type: ignore
                     database_url = st.secrets.get("database", {}).get("DATABASE_URL")
                 except (ImportError, AttributeError):
-                    pass
+                    pass # Streamlit or secrets not available in this context
 
             if not database_url:
                 logger.critical("DATABASE_URL environment variable or secret not set. Cannot connect to database.")
@@ -100,55 +158,60 @@ def get_db_engine(force_new: bool = False) -> sqlalchemy.engine.Engine:
                 database_url = database_url.replace('postgres://', 'postgresql://', 1)
 
             connect_args = {}
-            if 'postgresql' in database_url:
+            if 'postgresql' in database_url: # Specific to PostgreSQL
                 connect_args = {
-                    "connect_timeout": 15, "keepalives": 1, "keepalives_idle": 30,
-                    "keepalives_interval": 10, "keepalives_count": 5, "sslmode": 'require'
+                    "connect_timeout": 15,       # Increased timeout
+                    "keepalives": 1,
+                    "keepalives_idle": 30,
+                    "keepalives_interval": 10,
+                    "keepalives_count": 5,
+                    "sslmode": 'require'        # Common for cloud PostgreSQL
                 }
             try:
                 db_host_info = database_url.split('@')[-1] if '@' in database_url else database_url
                 logger.info(f"Creating new database engine instance for URL ending with: ...@{db_host_info}")
-                _engine_instance = create_engine(database_url, connect_args=connect_args, pool_pre_ping=True, pool_recycle=1800, echo=False)
-                
+                _engine_instance = create_engine(
+                    database_url,
+                    connect_args=connect_args,
+                    pool_size=5,
+                    max_overflow=10,
+                    pool_timeout=30,
+                    pool_recycle=1800, # Recycle connections every 30 minutes
+                    echo=False # Set to True for debugging SQL
+                )
+                # Test connection
                 with _engine_instance.connect() as conn:
                     conn.execute(text("SELECT 1"))
-                logger.info("Database engine created and connection tested successfully.")
-                
-                try:
-                    metadata.create_all(_engine_instance, checkfirst=True)
-                    logger.info(f"Table '{bls_job_data_table.name}' ensured to exist.")
-                except Exception as e_table:
-                    logger.error(f"Failed to create table '{bls_job_data_table.name}': {e_table}", exc_info=True)
-
-            except Exception as e:
-                logger.error(f"Failed to create database engine or test connection: {e}", exc_info=True)
-                _engine_instance = None
-                raise
+                logger.info("Database engine instance created and connection tested successfully.")
+            except SQLAlchemyError as e:
+                logger.critical(f"Failed to create or connect with database engine: {e}", exc_info=True)
+                _engine_instance = None # Ensure it's None if creation failed
+                raise # Re-raise the exception to signal failure
         return _engine_instance
 
-# --- Constants and Mappings ---
+# --- Static Mappings & Helper Functions ---
 JOB_TITLE_TO_SOC_STATIC: Dict[str, str] = {
     "software developer": "15-1252", "software engineer": "15-1252", "programmer": "15-1251",
     "web developer": "15-1254", "registered nurse": "29-1141", "nurse": "29-1141",
     "teacher": "25-2021", "elementary school teacher": "25-2021", "high school teacher": "25-2031",
     "lawyer": "23-1011", "attorney": "23-1011", "doctor": "29-1221", "physician": "29-1221",
-    "accountant": "13-2011", "project manager": "13-1199",
-    "product manager": "11-2021", "marketing manager": "11-2021", "retail salesperson": "41-2031",
-    "cashier": "41-2011", "customer service representative": "43-4051", "truck driver": "53-3032",
-    "receptionist": "43-4171", "data scientist": "15-2051", "data analyst": "15-2051",
-    "business analyst": "13-1111", "financial analyst": "13-2051", "human resources specialist": "13-1071",
-    "graphic designer": "27-1024", "police officer": "33-3051",
-    "chef": "35-1011", "cook": "35-2014", "waiter": "35-3031", "waitress": "35-3031",
-    "janitor": "37-2011", "administrative assistant": "43-6011", "executive assistant": "43-6011",
-    "dental hygienist": "29-1292", "electrician": "47-2111", "plumber": "47-2152",
-    "carpenter": "47-2031", "construction worker": "47-2061", "mechanic": "49-3023",
-    "automotive mechanic": "49-3023", "taxi driver": "53-3054", "uber driver": "53-3054",
-    "journalist": "27-3023", "reporter": "27-3023", "writer": "27-3042",
-    "editor": "27-3041", "photographer": "27-4021", "court reporter": "23-2011",
-    "stenographer": "23-2011", "digital court reporter": "23-2011", "travel agent": "41-3041"
+    "accountant": "13-2011", "project manager": "11-3021", "product manager": "11-2021",
+    "marketing manager": "11-2021", "retail salesperson": "41-2031", "cashier": "41-2011",
+    "customer service representative": "43-4051", "truck driver": "53-3032", "receptionist": "43-4171",
+    "data scientist": "15-2051", "data analyst": "15-2041", "business analyst": "13-1111",
+    "financial analyst": "13-2051", "human resources specialist": "13-1071", "graphic designer": "27-1024",
+    "police officer": "33-3051", "chef": "35-1011", "cook": "35-2014", "waiter": "35-3031",
+    "waitress": "35-3031", "janitor": "37-2011", "administrative assistant": "43-6011",
+    "executive assistant": "43-6011", "dental hygienist": "29-1292", "electrician": "47-2111",
+    "plumber": "47-2152", "carpenter": "47-2031", "construction worker": "47-2061",
+    "mechanic": "49-3023", "automotive mechanic": "49-3023", "taxi driver": "53-3054",
+    "uber driver": "53-3054", "journalist": "27-3023", "reporter": "27-3023",
+    "writer": "27-3042", "editor": "27-3041", "photographer": "27-4021",
+    "court reporter": "23-2011", "stenographer": "23-2011", "digital court reporter": "23-2011",
+    "travel agent": "41-3041" # Updated SOC for Travel Agents
 }
 
-SOC_TO_CATEGORY: Dict[str, str] = {
+SOC_TO_CATEGORY_STATIC: Dict[str, str] = {
     "11-": "Management Occupations", "13-": "Business and Financial Operations Occupations",
     "15-": "Computer and Mathematical Occupations", "17-": "Architecture and Engineering Occupations",
     "19-": "Life, Physical, and Social Science Occupations", "21-": "Community and Social Service Occupations",
@@ -160,791 +223,457 @@ SOC_TO_CATEGORY: Dict[str, str] = {
     "43-": "Office and Administrative Support Occupations", "45-": "Farming, Fishing, and Forestry Occupations",
     "47-": "Construction and Extraction Occupations", "49-": "Installation, Maintenance, and Repair Occupations",
     "51-": "Production Occupations", "53-": "Transportation and Material Moving Occupations",
-    "00-0000": "Unknown or Unclassified" # For fallback
+    "00-0000": "Unknown or Unclassified"
 }
 
-TARGET_SOC_CODES: List[Dict[str, str]] = [
-    {"soc_code": "15-1252", "title": "Software Developers"}, {"soc_code": "15-1251", "title": "Computer Programmers"},
-    {"soc_code": "15-1254", "title": "Web Developers"}, {"soc_code": "15-2051", "title": "Data Scientists"},
-    {"soc_code": "15-1211", "title": "Computer Systems Analysts"}, {"soc_code": "15-1244", "title": "Network and Computer Systems Administrators"},
-    {"soc_code": "15-1232", "title": "Computer User Support Specialists"}, {"soc_code": "15-1299", "title": "Computer Occupations, All Other"},
-    {"soc_code": "13-2011", "title": "Accountants and Auditors"}, {"soc_code": "13-2051", "title": "Financial Analysts"},
-    {"soc_code": "13-1111", "title": "Management Analysts"}, {"soc_code": "13-1161", "title": "Market Research Analysts and Marketing Specialists"},
-    {"soc_code": "11-1021", "title": "General and Operations Managers"}, {"soc_code": "11-2021", "title": "Marketing Managers"},
-    {"soc_code": "11-3021", "title": "Computer and Information Systems Managers"}, {"soc_code": "11-9199", "title": "Managers, All Other"},
-    {"soc_code": "29-1141", "title": "Registered Nurses"}, {"soc_code": "29-1229", "title": "Physicians, All Other"},
-    {"soc_code": "29-1021", "title": "Dentists, General"}, {"soc_code": "29-2061", "title": "Licensed Practical and Licensed Vocational Nurses"},
-    {"soc_code": "25-2021", "title": "Elementary School Teachers, Except Special Education"}, {"soc_code": "25-2031", "title": "Secondary School Teachers, Except Special and Career/Technical Education"},
-    {"soc_code": "25-3099", "title": "Teachers and Instructors, All Other"},
-    {"soc_code": "43-4051", "title": "Customer Service Representatives"}, {"soc_code": "43-6011", "title": "Executive Secretaries and Executive Administrative Assistants"},
-    {"soc_code": "43-9061", "title": "Office Clerks, General"}, {"soc_code": "43-9021", "title": "Data Entry Keyers"},
-    {"soc_code": "41-2031", "title": "Retail Salespersons"}, {"soc_code": "41-1011", "title": "First-Line Supervisors of Retail Sales Workers"},
-    {"soc_code": "53-3032", "title": "Heavy and Tractor-Trailer Truck Drivers"}, {"soc_code": "53-3033", "title": "Light Truck Drivers"},
-    {"soc_code": "47-2061", "title": "Construction Laborers"}, {"soc_code": "47-2111", "title": "Electricians"},
-    {"soc_code": "47-2031", "title": "Carpenters"},
-    {"soc_code": "35-2014", "title": "Cooks, Restaurant"}, {"soc_code": "35-3031", "title": "Waiters and Waitresses"},
-    {"soc_code": "23-1011", "title": "Lawyers"}, {"soc_code": "23-2011", "title": "Paralegals and Legal Assistants"},
-    {"soc_code": "27-1024", "title": "Graphic Designers"}, {"soc_code": "27-3042", "title": "Technical Writers"},
-    {"soc_code": "27-3023", "title": "News Analysts, Reporters, and Journalists"}
-]
-
-def standardize_job_title(title: str) -> str:
-    """Standardize job title format for consistent mapping."""
-    standardized = title.lower().strip()
-    suffixes = [" i", " ii", " iii", " iv", " v", " specialist", " assistant", " associate", " senior", " junior", " lead"]
-    for suffix in suffixes:
-        if standardized.endswith(suffix):
-            standardized = standardized[:-len(suffix)].strip()
-            break
-    return standardized
-
 def get_job_category_from_soc(occupation_code: str) -> str:
-    """Get the job category based on SOC code prefix."""
-    if not occupation_code or not isinstance(occupation_code, str): return "General"
-    for prefix, category in SOC_TO_CATEGORY.items():
+    """Determines job category from SOC code prefix."""
+    if not occupation_code or not isinstance(occupation_code, str):
+        return "General"
+    for prefix, category in SOC_TO_CATEGORY_STATIC.items():
         if occupation_code.startswith(prefix):
             return category
     return "General"
 
+def standardize_job_title(title: str) -> str:
+    """Standardizes job title for consistent mapping."""
+    if not title or not isinstance(title, str):
+        return ""
+    std_title = title.lower().strip()
+    suffixes_prefixes = [
+        " i", " ii", " iii", " iv", " v", " specialist", " assistant", " associate",
+        " senior", " sr.", " junior", " jr.", " lead", " head of", " chief ", " entry level",
+        " intern", "(internship)", " trainee", " apprentice"
+    ]
+    for item in suffixes_prefixes:
+        if item.startswith(" ") and std_title.endswith(item):
+            std_title = std_title[:-len(item)]
+        elif item.endswith(" ") and std_title.startswith(item):
+            std_title = std_title[len(item):]
+    std_title = re.sub(r'\s+', ' ', std_title).strip() # Normalize multiple spaces
+    return std_title
+
 def find_soc_code_and_title(job_title_query: str, engine: sqlalchemy.engine.Engine) -> Tuple[Optional[str], str, str]:
-    """Find SOC code and standardized title for a job title, checking DB first, then BLS API."""
-    std_query_title = standardize_job_title(job_title_query)
-    logger.info(f"Standardized '{job_title_query}' to '{std_query_title}' for SOC search.")
+    """
+    Finds SOC code and standardized title for a job query.
+    Prioritizes static mapping, then database, then BLS API search.
+    """
+    standardized_query = standardize_job_title(job_title_query)
+    logger.debug(f"Standardized job title query: '{job_title_query}' -> '{standardized_query}'")
 
     # 1. Check static mapping
-    if std_query_title in JOB_TITLE_TO_SOC_STATIC:
-        soc = JOB_TITLE_TO_SOC_STATIC[std_query_title]
-        category = get_job_category_from_soc(soc)
-        # Attempt to get a more official title from DB if this was an alias
-        try:
-            with engine.connect() as conn:
-                res = conn.execute(text("SELECT standardized_title FROM bls_job_data WHERE occupation_code = :soc LIMIT 1"), {"soc": soc}).fetchone()
-                official_title = res[0] if res else job_title_query
-            logger.info(f"Found SOC {soc} for '{std_query_title}' via static map. Official title: '{official_title}', Category: {category}")
-            return soc, official_title, category
-        except Exception as e_db_title:
-            logger.warning(f"DB lookup for official title for SOC {soc} failed: {e_db_title}. Using query title.")
-            return soc, job_title_query, category
+    if standardized_query in JOB_TITLE_TO_SOC_STATIC:
+        soc_code = JOB_TITLE_TO_SOC_STATIC[standardized_query]
+        category = get_job_category_from_soc(soc_code)
+        logger.debug(f"Found '{standardized_query}' in static map: SOC {soc_code}, Category: {category}")
+        return soc_code, job_title_query, category # Return original query as title for consistency if found this way
 
-
-    # 2. Search BLS API (via bls_connector)
-    logger.info(f"SOC for '{std_query_title}' not in static map. Querying BLS API via bls_connector.")
+    # 2. Check database for standardized title or original title
     try:
-        matches = bls_connector.search_occupations(job_title_query) # Use original query for broader search
-        if matches:
-            best_match = matches[0]
-            soc = best_match["code"]
-            official_title = best_match["title"]
-            category = get_job_category_from_soc(soc)
-            logger.info(f"Found SOC {soc} ('{official_title}') for '{job_title_query}' via BLS API. Category: {category}")
-            
-            # Cache this new mapping (optional, consider if JOB_TITLE_TO_SOC_STATIC should be dynamic)
-            # JOB_TITLE_TO_SOC_STATIC[std_query_title] = soc 
-            return soc, official_title, category
-    except Exception as e_bls_search:
-        logger.error(f"BLS API search for '{job_title_query}' failed: {e_bls_search}", exc_info=True)
+        with engine.connect() as conn:
+            # Query for standardized title first
+            query_db = text("SELECT occupation_code, standardized_title, job_category FROM bls_job_data WHERE LOWER(standardized_title) = LOWER(:query) LIMIT 1")
+            result = conn.execute(query_db, {"query": standardized_query}).fetchone()
+            if result:
+                logger.debug(f"Found '{standardized_query}' (as standardized_title) in DB: SOC {result[0]}, Title: {result[1]}, Category: {result[2]}")
+                return result[0], result[1], result[2]
 
-    logger.warning(f"Could not find SOC code for '{job_title_query}'. Defaulting to 00-0000.")
+            # Query for original job title if standardized not found
+            query_db_orig = text("SELECT occupation_code, standardized_title, job_category FROM bls_job_data WHERE LOWER(job_title) = LOWER(:query) LIMIT 1")
+            result_orig = conn.execute(query_db_orig, {"query": job_title_query.lower()}).fetchone()
+            if result_orig:
+                logger.debug(f"Found '{job_title_query}' (as job_title) in DB: SOC {result_orig[0]}, Title: {result_orig[1]}, Category: {result_orig[2]}")
+                return result_orig[0], result_orig[1], result_orig[2]
+    except SQLAlchemyError as e:
+        logger.error(f"Database error during SOC code lookup for '{job_title_query}': {e}", exc_info=True)
+
+    # 3. Use BLS API search as a last resort
+    logger.debug(f"Job title '{job_title_query}' not found in static map or DB, querying BLS API.")
+    api_matches = bls_connector.search_occupations(job_title_query)
+    if api_matches:
+        best_match = api_matches[0]
+        soc_code = best_match["code"]
+        matched_title = best_match["title"]
+        category = get_job_category_from_soc(soc_code)
+        logger.info(f"BLS API match for '{job_title_query}': SOC {soc_code}, Title: '{matched_title}', Category: {category}")
+        # Add to static map for future in-session lookups
+        JOB_TITLE_TO_SOC_STATIC[standardized_query] = soc_code
+        JOB_TITLE_TO_SOC_STATIC[standardize_job_title(matched_title)] = soc_code
+        return soc_code, matched_title, category
+
+    logger.warning(f"Could not find SOC code for '{job_title_query}'. Returning default.")
     return "00-0000", job_title_query, "General"
 
 
-def parse_oes_series_response(oes_data_raw: Dict[str, Any], soc_code: str) -> Dict[str, Any]:
-    """Parses raw OES data from BLS API into a structured dictionary."""
-    parsed_data: Dict[str, Any] = {
-        "occupation_code": soc_code, "employment": None, "annual_mean_wage": None,
-        "annual_median_wage": None, "data_year": None, "messages": [], "status": "success"
-    }
-    if not oes_data_raw or oes_data_raw.get("status") != "REQUEST_SUCCEEDED":
-        parsed_data["status"] = "error"
-        parsed_data["messages"].append(f"OES API request failed or returned no data. Status: {oes_data_raw.get('status', 'Unknown')}")
-        if oes_data_raw and "message" in oes_data_raw:
-             parsed_data["messages"].extend(oes_data_raw.get("message", []))
-        logger.warning(f"OES API request failed for SOC {soc_code}: {json.dumps(oes_data_raw)}")
-        return parsed_data
+# --- Main Data Processing Functions ---
+def get_bls_data_from_db(occupation_code: str, engine: sqlalchemy.engine.Engine) -> Optional[Dict[str, Any]]:
+    """Retrieves BLS data from the database if fresh."""
+    if not occupation_code: return None
+    try:
+        with engine.connect() as conn:
+            query = text("SELECT * FROM bls_job_data WHERE occupation_code = :code LIMIT 1")
+            result = conn.execute(query, {"code": occupation_code}).fetchone()
+            if result:
+                data = dict(result._mapping) # type: ignore
+                last_fetch_str = data.get("last_api_fetch")
+                if last_fetch_str:
+                    try:
+                        last_fetch = datetime.datetime.strptime(last_fetch_str, '%Y-%m-%d').replace(tzinfo=datetime.timezone.utc)
+                        if (datetime.datetime.now(datetime.timezone.utc) - last_fetch).days < 90: # Data is fresh if less than 90 days old
+                            logger.info(f"Using cached BLS data for SOC {occupation_code} from database (fetched {last_fetch_str}).")
+                            return data
+                        else:
+                            logger.info(f"Cached BLS data for SOC {occupation_code} is stale (fetched {last_fetch_str}).")
+                    except ValueError as ve:
+                        logger.warning(f"Could not parse last_api_fetch date '{last_fetch_str}' for SOC {occupation_code}: {ve}. Assuming stale.")
+                else:
+                    logger.warning(f"last_api_fetch is null for SOC {occupation_code}. Assuming stale.")
+    except SQLAlchemyError as e:
+        logger.error(f"Database error retrieving BLS data for SOC {occupation_code}: {e}", exc_info=True)
+    return None
 
-    series_data = oes_data_raw.get("Results", {}).get("series", [])
-    if not series_data:
-        parsed_data["status"] = "error"
-        parsed_data["messages"].append("No 'series' data found in OES API response.")
-        logger.warning(f"No series data in OES response for SOC {soc_code}: {json.dumps(oes_data_raw)}")
-        return parsed_data
-    
-    # Store all messages from API
-    if "message" in oes_data_raw:
-        parsed_data["messages"].extend(oes_data_raw.get("message", []))
+def save_bls_data_to_db(data_to_save: Dict[str, Any], engine: sqlalchemy.engine.Engine) -> bool:
+    """Saves or updates BLS data in the database."""
+    if not data_to_save or 'occupation_code' not in data_to_save:
+        logger.warning("Attempted to save BLS data without occupation_code.")
+        return False
 
-    for series in series_data:
-        series_id = series.get("seriesID", "")
-        data_points = series.get("data", [])
-        if not data_points:
-            msg = f"No data points found for series {series_id}."
-            parsed_data["messages"].append(msg)
-            logger.warning(f"{msg} SOC: {soc_code}")
-            continue
+    soc_code = data_to_save['occupation_code']
+    logger.debug(f"Preparing to save data for SOC {soc_code}: {data_to_save}")
 
-        latest_data_point = data_points[0] # Assuming data is sorted with latest first
-        value_str = latest_data_point.get("value")
-        data_year = latest_data_point.get("year")
-        
-        if parsed_data["data_year"] is None and data_year:
-             parsed_data["data_year"] = data_year
-
-        if value_str:
-            try:
-                value = float(value_str)
-                if series_id.endswith("01"): # Employment
-                    parsed_data["employment"] = int(value)
-                elif series_id.endswith("03"): # Annual Mean Wage
-                    parsed_data["annual_mean_wage"] = value
-                elif series_id.endswith("04"): # Annual Median Wage
-                    parsed_data["annual_median_wage"] = value
-            except ValueError:
-                msg = f"Could not convert value '{value_str}' to float for series {series_id}."
-                parsed_data["messages"].append(msg)
-                logger.warning(f"{msg} SOC: {soc_code}")
-        else:
-            msg = f"No value found for series {series_id} in latest data point."
-            parsed_data["messages"].append(msg)
-            logger.warning(f"{msg} SOC: {soc_code}")
-            
-    if not any([parsed_data["employment"], parsed_data["annual_mean_wage"], parsed_data["annual_median_wage"]]):
-        if parsed_data["status"] == "success": # Only change to error if not already error
-            parsed_data["status"] = "error" # Mark as error if no key data points were parsed
-        parsed_data["messages"].append("No key OES data points (employment, mean wage, median wage) could be parsed.")
-        logger.warning(f"No key OES data points parsed for SOC {soc_code}.")
-
-    return parsed_data
+    # Ensure date fields are strings in YYYY-MM-DD format
+    for date_field in ['last_api_fetch', 'last_updated']:
+        if date_field in data_to_save and isinstance(data_to_save[date_field], datetime.datetime):
+            data_to_save[date_field] = data_to_save[date_field].strftime('%Y-%m-%d')
+        elif date_field in data_to_save and data_to_save[date_field] is None and bls_job_data_table.columns[date_field].nullable is False:
+             data_to_save[date_field] = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d') # Ensure non-nullable dates have a value
 
 
-def parse_ep_series_response(ep_data_raw: Dict[str, Any], soc_code: str) -> Dict[str, Any]:
-    """Parses raw EP data from BLS API into a structured dictionary."""
-    parsed_data: Dict[str, Any] = {
-        "occupation_code": soc_code, "current_employment": None, "projected_employment": None,
-        "employment_change_numeric": None, "employment_change_percent": None,
-        "annual_job_openings": None, "base_year": None, "projection_year": None,
-        "messages": [], "status": "success"
-    }
-
-    if not ep_data_raw or ep_data_raw.get("status") != "REQUEST_SUCCEEDED":
-        parsed_data["status"] = "error"
-        parsed_data["messages"].append(f"EP API request failed or returned no data. Status: {ep_data_raw.get('status', 'Unknown')}")
-        if ep_data_raw and "message" in ep_data_raw:
-            parsed_data["messages"].extend(ep_data_raw.get("message", []))
-        logger.warning(f"EP API request failed for SOC {soc_code}: {json.dumps(ep_data_raw)}")
-        return parsed_data
-
-    series_data = ep_data_raw.get("Results", {}).get("series", [])
-    if not series_data:
-        parsed_data["status"] = "error"
-        parsed_data["messages"].append("No 'series' data found in EP API response.")
-        logger.warning(f"No series data in EP response for SOC {soc_code}: {json.dumps(ep_data_raw)}")
-        return parsed_data
-
-    if "message" in ep_data_raw:
-        parsed_data["messages"].extend(ep_data_raw.get("message", []))
-
-    for series in series_data:
-        series_id = series.get("seriesID", "")
-        data_points = series.get("data", [])
-        if not data_points:
-            msg = f"No data points found for series {series_id}."
-            parsed_data["messages"].append(msg)
-            logger.warning(f"{msg} SOC: {soc_code}")
-            continue
-        
-        latest_data_point = data_points[0]
-        value_str = latest_data_point.get("value")
-        base_year = latest_data_point.get("latestPeriodYear") # Using this as a proxy
-        proj_year = latest_data_point.get("year")
-
-        if parsed_data["base_year"] is None and base_year: # Assuming first series gives the right base year
-            parsed_data["base_year"] = base_year
-        if parsed_data["projection_year"] is None and proj_year:
-            parsed_data["projection_year"] = proj_year
-            
-        if value_str:
-            try:
-                value = float(value_str)
-                # EP Series ID suffixes: 01=Empl, 02=Empl Change Num, 03=Empl Change Percent, 04=Occupational Openings
-                if series_id.endswith("01"): # Current/Base Employment
-                    parsed_data["current_employment"] = int(value * 1000) # EP data is in thousands
-                elif series_id.endswith("02"): # Employment Change Numeric
-                    parsed_data["employment_change_numeric"] = int(value * 1000)
-                elif series_id.endswith("03"): # Employment Change Percent
-                    parsed_data["employment_change_percent"] = value
-                elif series_id.endswith("04"): # Annual Job Openings
-                    parsed_data["annual_job_openings"] = int(value * 1000)
-                # Note: Projected employment is not directly available as a series, it's calculated.
-                # We'll calculate it later if current_employment and change_numeric are available.
-            except ValueError:
-                msg = f"Could not convert value '{value_str}' to float for series {series_id}."
-                parsed_data["messages"].append(msg)
-                logger.warning(f"{msg} SOC: {soc_code}")
-        else:
-            msg = f"No value found for series {series_id} in latest data point."
-            parsed_data["messages"].append(msg)
-            logger.warning(f"{msg} SOC: {soc_code}")
-
-    # Calculate projected employment if possible
-    if parsed_data["current_employment"] is not None and parsed_data["employment_change_numeric"] is not None:
-        parsed_data["projected_employment"] = parsed_data["current_employment"] + parsed_data["employment_change_numeric"]
-    
-    if not any([parsed_data["current_employment"], parsed_data["projected_employment"], parsed_data["employment_change_percent"], parsed_data["annual_job_openings"]]):
-        if parsed_data["status"] == "success":
-            parsed_data["status"] = "error"
-        parsed_data["messages"].append("No key EP data points could be parsed.")
-        logger.warning(f"No key EP data points parsed for SOC {soc_code}.")
-        
-    return parsed_data
+    # Filter data to match table columns and handle potential None for nullable numeric fields
+    table_columns = {col.name for col in bls_job_data_table.columns}
+    filtered_data_to_save = {k: (v if v is not None else sqlalchemy.null()) for k, v in data_to_save.items() if k in table_columns}
 
 
-def fetch_and_process_soc_data(soc_code: str, original_job_title: str, standardized_soc_title: str, job_category: str) -> Dict[str, Any]:
-    """Fetches OES and EP data for a SOC, processes it, and prepares for DB storage."""
+    # Ensure all required non-nullable fields are present or have defaults
+    for col in bls_job_data_table.columns:
+        if not col.nullable and col.name not in filtered_data_to_save and col.default is None and not col.primary_key:
+            logger.error(f"Missing non-nullable value for column '{col.name}' when saving SOC {soc_code}.")
+            return False # Or raise an error, or provide a sensible default if appropriate
+
+    # Ensure 'last_updated' is always set
+    filtered_data_to_save['last_updated'] = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
+
+
+    try:
+        with engine.connect() as conn:
+            stmt = pg_insert(bls_job_data_table).values(**filtered_data_to_save)
+            update_dict = {k: getattr(stmt.excluded, k) for k in filtered_data_to_save if k != 'id' and k != 'occupation_code'}
+            update_dict['last_updated'] = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d') # Ensure last_updated is updated on conflict
+
+            stmt = stmt.on_conflict_do_update(
+                index_elements=['occupation_code'],
+                set_=update_dict
+            )
+            conn.execute(stmt)
+            conn.commit()
+        logger.info(f"Successfully saved/updated BLS data for SOC {soc_code}.")
+        return True
+    except IntegrityError as ie: # Handle specific integrity errors like unique constraints
+        logger.error(f"Integrity error saving BLS data for SOC {soc_code}: {ie}", exc_info=True)
+        # Potentially attempt an update if insert failed due to existing key, though on_conflict_do_update should handle this.
+    except SQLAlchemyError as e:
+        logger.error(f"Database error saving BLS data for SOC {soc_code}: {e}", exc_info=True)
+    return False
+
+
+def fetch_and_process_soc_data(soc_code: str, job_title_query: str, engine: sqlalchemy.engine.Engine, force_api_fetch: bool = False) -> Optional[Dict[str, Any]]:
+    """Fetches data for a SOC code, from DB if fresh, else from BLS API, then processes and stores it."""
+    logger.info(f"Fetching data for SOC: {soc_code}, Job Query: '{job_title_query}', Force API: {force_api_fetch}")
+
+    if not force_api_fetch:
+        db_data = get_bls_data_from_db(soc_code, engine)
+        if db_data:
+            return format_database_row_to_app_schema(db_data)
+
+    logger.info(f"No fresh data in DB or API fetch forced for SOC {soc_code}. Fetching from BLS API.")
     current_time = datetime.datetime.now(datetime.timezone.utc)
     last_api_fetch_str = current_time.strftime('%Y-%m-%d')
-    current_year = current_time.year # Define current_year
 
-    # Initialize data structure with defaults
-    processed_data: Dict[str, Any] = {
+    oes_data_raw = bls_connector.get_oes_data_for_soc(soc_code)
+    time.sleep(0.5) # Respect API rate limits
+    ep_data_raw = bls_connector.get_ep_data_for_soc(soc_code)
+
+    if oes_data_raw.get("status") != "success" or ep_data_raw.get("status") != "success":
+        logger.error(f"BLS API fetch failed for SOC {soc_code}. OES: {oes_data_raw.get('message', 'N/A')}, EP: {ep_data_raw.get('message', 'N/A')}")
+        return None # Strict: if API fails, no data.
+
+    # Process and combine data
+    processed_data = {
         "occupation_code": soc_code,
-        "job_title": original_job_title,
-        "standardized_title": standardized_soc_title,
-        "job_category": job_category,
+        "job_title": job_title_query, # Use the original query for this field initially
+        "standardized_title": oes_data_raw.get("occupation_name", job_title_query),
+        "job_category": get_job_category_from_soc(soc_code),
+        "current_employment": oes_data_raw.get("employment"),
+        "projected_employment": ep_data_raw.get("projected_employment"),
+        "employment_change_numeric": ep_data_raw.get("employment_change_numeric"),
+        "percent_change": ep_data_raw.get("percent_change"),
+        "annual_job_openings": ep_data_raw.get("annual_job_openings"),
+        "median_wage": oes_data_raw.get("median_wage"),
+        "mean_wage": oes_data_raw.get("mean_wage"),
+        "oes_data_year": oes_data_raw.get("data_year"),
+        "ep_base_year": ep_data_raw.get("base_year"),
+        "ep_proj_year": ep_data_raw.get("projection_year"),
+        "raw_oes_data_json": json.dumps(oes_data_raw),
+        "raw_ep_data_json": json.dumps(ep_data_raw),
         "last_api_fetch": last_api_fetch_str,
-        "raw_oes_data_json": json.dumps({"status": "not_fetched", "message": "OES fetch not initiated."}),
-        "raw_ep_data_json": json.dumps({"status": "not_fetched", "message": "EP fetch not initiated."}),
-        "current_employment": None, "projected_employment": None, "employment_change_numeric": None,
-        "percent_change": None, "annual_job_openings": None, "median_wage": None, "mean_wage": None,
-        "oes_data_year": None, "ep_base_year": None, "ep_proj_year": None,
-        "error": None,
-        "source": "bls_api_pending" 
+        "last_updated": last_api_fetch_str # Set last_updated to last_api_fetch on new/updated data
     }
 
-    oes_fetch_success = False
-    ep_fetch_success = False
-    oes_error_messages: List[str] = []
-    ep_error_messages: List[str] = []
-
-    # Fetch OES data
-    try:
-        logger.info(f"Fetching OES data for SOC {soc_code} for years {str(current_year - 2)}-{str(current_year)}") # Adjusted to more recent typical availability
-        oes_data_raw = bls_connector.get_oes_data_for_soc(soc_code, start_year=str(current_year - 2), end_year=str(current_year))
-        if oes_data_raw is None: oes_data_raw = {"status": "error", "message": ["OES connector returned None."]}
-        
-        oes_parsed = parse_oes_series_response(oes_data_raw, soc_code)
-        processed_data["raw_oes_data_json"] = json.dumps(oes_data_raw) # Store raw response regardless of status
-        
-        if oes_parsed.get("status") == "success":
-            # Merge only non-None values to avoid overwriting potential EP data later if OES is partial
-            for key, value in oes_parsed.items():
-                if value is not None and key not in ["status", "messages", "occupation_code"]: # occupation_code already set
-                    processed_data[key] = value
-            oes_fetch_success = True
-            logger.info(f"Successfully processed OES data for SOC {soc_code}.")
-        else:
-            oes_error_messages.extend(oes_parsed.get("messages", ["Unknown OES parsing error."]))
-            logger.warning(f"Failed to fetch or parse OES data for SOC {soc_code}. API Response: {processed_data['raw_oes_data_json']}")
-    except Exception as e:
-        oes_error_messages.append(f"Exception during OES fetch/parse: {str(e)}")
-        logger.error(f"Exception fetching/processing OES data for SOC {soc_code}: {e}", exc_info=True)
-        if processed_data["raw_oes_data_json"] is None or processed_data["raw_oes_data_json"] == json.dumps({"status": "not_fetched", "message": "OES fetch not initiated."}):
-             processed_data["raw_oes_data_json"] = json.dumps({"error": str(e), "status": "exception"})
-
-
-    # Fetch EP data
-    try:
-        logger.info(f"Fetching EP data for SOC {soc_code}")
-        ep_data_raw = bls_connector.get_ep_data_for_soc(soc_code)
-        if ep_data_raw is None: ep_data_raw = {"status": "error", "message": ["EP connector returned None."]}
-
-        ep_parsed_outer = parse_ep_series_response(ep_data_raw, soc_code)
-        processed_data["raw_ep_data_json"] = json.dumps(ep_data_raw) # Store raw response regardless of status
-        
-        ep_parsed = ep_parsed_outer.get("projections", {}) # Projections are nested
-        if not ep_parsed: # if "projections" key is missing or its value is None/empty
-            ep_parsed = ep_parsed_outer # Use the outer dict, it might contain error messages
-
-        if ep_parsed_outer.get("status") == "success": # Check status from the outer parsed dict
-            # Merge EP data, prioritizing EP's current_employment if OES failed or didn't provide it
-            if processed_data.get("current_employment") is None and ep_parsed.get("current_employment") is not None:
-                processed_data["current_employment"] = ep_parsed.get("current_employment")
-            
-            # Merge other EP fields
-            for key, value in ep_parsed.items():
-                 if value is not None and key not in ["status", "messages", "occupation_code"]: # occupation_code already set
-                    processed_data[key] = value
-            ep_fetch_success = True
-            logger.info(f"Successfully processed EP data for SOC {soc_code}.")
-        else:
-            ep_error_messages.extend(ep_parsed_outer.get("messages", ["Unknown EP parsing error."])) # Use outer for messages
-            logger.warning(f"Failed to fetch or parse EP data for SOC {soc_code}. API Response: {processed_data['raw_ep_data_json']}")
-    except Exception as e:
-        ep_error_messages.append(f"Exception during EP fetch/parse: {str(e)}")
-        logger.error(f"Exception fetching/processing EP data for SOC {soc_code}: {e}", exc_info=True)
-        if processed_data["raw_ep_data_json"] is None or processed_data["raw_ep_data_json"] == json.dumps({"status": "not_fetched", "message": "EP fetch not initiated."}):
-            processed_data["raw_ep_data_json"] = json.dumps({"error": str(e), "status": "exception"})
-
-    # Consolidate status and error messages
-    if oes_fetch_success and ep_fetch_success:
-        processed_data["source"] = "bls_api_success_both"
-        processed_data["error"] = None # Clear any default error
-        logger.info(f"SOC {soc_code}: Both OES and EP data fetched successfully.")
-    elif oes_fetch_success:
-        processed_data["source"] = "bls_api_partial_success_oes_only"
-        processed_data["error"] = f"EP data fetch/parse failed. Messages: {'; '.join(ep_error_messages)}" if ep_error_messages else "EP data unavailable."
-        logger.warning(f"SOC {soc_code}: OES success, EP failure. Error: {processed_data['error']}")
-    elif ep_fetch_success:
-        processed_data["source"] = "bls_api_partial_success_ep_only"
-        processed_data["error"] = f"OES data fetch/parse failed. Messages: {'; '.join(oes_error_messages)}" if oes_error_messages else "OES data unavailable."
-        logger.warning(f"SOC {soc_code}: EP success, OES failure. Error: {processed_data['error']}")
-    else: # Both failed
-        processed_data["source"] = "bls_api_critical_failure_both"
-        all_api_messages = list(set(oes_error_messages + ep_error_messages)) # Unique messages
-        processed_data["error"] = f"Critical BLS API data fetch failure for OES and EP. Messages: {'; '.join(all_api_messages)}" if all_api_messages else "Critical BLS API data unavailable for OES and EP."
-        logger.error(f"SOC {soc_code}: Critical failure for both OES and EP. Error: {processed_data['error']}")
-    
-    # Attempt to save to database, even if data is partial, but not if critical failure
-    # The `save_bls_data_to_db` function should handle None values for nullable columns.
-    engine = get_db_engine()
-    if processed_data["source"] != "bls_api_critical_failure_both":
-        if not save_bls_data_to_db(processed_data.copy(), engine): # Pass a copy to avoid modification by save function
-            logger.error(f"Failed to save processed data for SOC {soc_code} to database. API source was: {processed_data['source']}")
-            # Update error and source to reflect DB save failure as the most recent/pertinent issue if API was somewhat successful
-            if "success" in processed_data["source"]: # If API fetch was fully or partially successful
-                processed_data["source"] = "bls_api_success_db_save_failed"
-                processed_data["error"] = (processed_data["error"] + "; Additionally, failed to save data to database." if processed_data["error"] 
-                                           else "Successfully fetched API data but failed to save to database.")
-            else: # API fetch also had issues, DB save failure is compounding
-                 processed_data["source"] = "bls_api_fetch_error_and_db_save_failed"
-                 processed_data["error"] = (processed_data["error"] + "; Also, failed to save data to database." if processed_data["error"]
-                                            else "API data fetch had issues, and subsequent database save also failed.")
-        else:
-            logger.info(f"Successfully saved/updated data for SOC {soc_code} to database. API source was: {processed_data['source']}")
-            # If DB save is successful, the source already reflects the API fetch status, which is fine.
+    if save_bls_data_to_db(processed_data, engine):
+        return format_database_row_to_app_schema(processed_data)
     else:
-        logger.warning(f"Skipping database save for SOC {soc_code} due to critical API fetch errors: {processed_data['error']}")
+        logger.error(f"Failed to save processed data for SOC {soc_code} to database.")
+        # Return the processed data anyway if saving failed, but log the error.
+        # This allows the app to function with fresh data even if DB save fails.
+        return format_database_row_to_app_schema(processed_data)
 
-    return processed_data
 
-# --- Main Function for App Integration ---
-def get_job_data_from_db_or_api(job_title_query: str) -> Dict[str, Any]:
-    """
-    Main function to get job data. Tries DB first, then BLS API if stale/missing.
-    This is the primary entry point for fetching job data for the application.
-    Strictly uses real data; no synthetic fallbacks.
-    """
-    engine = get_db_engine()
-    soc_code, standardized_soc_title, job_category = find_soc_code_and_title(job_title_query, engine)
+def format_database_row_to_app_schema(db_row: Dict[str, Any]) -> Dict[str, Any]:
+    """Formats a database row (as dict) to the schema expected by the application."""
+    if not db_row: return {}
 
-    if soc_code == "00-0000": # Unclassifiable or not found by BLS search
-        logger.warning(f"Job title '{job_title_query}' (std: '{standardized_soc_title}') could not be mapped to a valid SOC. Returning error.")
-        return {
-            "error": f"Job title '{job_title_query}' could not be classified or found in BLS data.",
-            "job_title": job_title_query, "standardized_title": standardized_soc_title,
-            "occupation_code": soc_code, "job_category": job_category,
-            "source": "soc_lookup_failed"
-        }
+    job_category = db_row.get('job_category', get_job_category_from_soc(db_row.get('occupation_code', '')))
+    risk_scores = calculate_ai_risk_from_category(job_category, db_row.get('occupation_code', ''))
 
-    # Try fetching from DB first
-    db_data = get_bls_data_from_db(soc_code, engine)
-    if db_data:
-        logger.info(f"Using data from database for SOC {soc_code} ('{standardized_soc_title}')")
-        # Ensure all expected fields are present, even if None
-        formatted_db_data = format_database_row_to_app_schema(db_data, job_title_query, standardized_soc_title, job_category)
-        return formatted_db_data
-
-    # If not in DB or stale, fetch from BLS API and store
-    logger.info(f"Data for SOC {soc_code} not in DB or stale. Fetching from BLS API for '{standardized_soc_title}'.")
+    # Generate employment trend from current to projected
+    current_emp = db_row.get('current_employment')
+    projected_emp = db_row.get('projected_employment')
+    trend_years_count = 11 # For a 10-year projection (e.g., 2022-2032)
     
-    try:
-        processed_data_from_api = fetch_and_process_soc_data(soc_code, job_title_query, standardized_soc_title, job_category)
-        
-        if save_bls_data_to_db(processed_data_from_api.copy(), engine): # Pass a copy
-            logger.info(f"Successfully saved/updated data for SOC {soc_code} to database.")
-        else:
-            logger.error(f"Failed to save data for SOC {soc_code} to database. Proceeding with API data for this request.")
-            # Update source/error if DB save failed after successful/partial API fetch
-            if "success" in processed_data_from_api.get("source", ""):
-                processed_data_from_api["source"] = "bls_api_success_db_save_failed"
-                processed_data_from_api["error"] = (processed_data_from_api.get("error", "") + "; DB save failed." 
-                                                   if processed_data_from_api.get("error") 
-                                                   else "DB save failed after API success.")
-            elif processed_data_from_api.get("source") != "bls_api_critical_failure_both": # Avoid overwriting critical API failure
-                processed_data_from_api["source"] = "bls_api_fetch_error_and_db_save_failed"
-                processed_data_from_api["error"] = (processed_data_from_api.get("error", "") + "; Also, DB save failed."
-                                                   if processed_data_from_api.get("error")
-                                                   else "API fetch error and DB save failed.")
+    trend_employment = []
+    trend_years = []
 
+    if current_emp is not None and projected_emp is not None:
+        base_year_str = db_row.get('ep_base_year', str(datetime.datetime.now().year - 1))
+        proj_year_str = db_row.get('ep_proj_year', str(int(base_year_str) + 10))
+        try:
+            base_year = int(base_year_str)
+            proj_year = int(proj_year_str)
+            num_projection_years = proj_year - base_year
+            if num_projection_years > 0:
+                trend_years = list(range(base_year, proj_year + 1))
+                trend_employment = [int(current_emp + (projected_emp - current_emp) * (i / num_projection_years)) for i in range(num_projection_years + 1)]
+            else: # If years are same or invalid, just show current and projected
+                trend_years = [base_year, proj_year] if base_year != proj_year else [base_year]
+                trend_employment = [current_emp, projected_emp] if base_year != proj_year else [current_emp]
 
-        final_data = format_api_processed_data_to_app_schema(processed_data_from_api, job_title_query, standardized_soc_title, job_category)
-        # Ensure the source reflects the most recent status (API fetch or DB save failure)
-        final_data["source"] = processed_data_from_api.get("source", "bls_api_live_fetch") 
-        if processed_data_from_api.get("error"): # Propagate error if any
-            final_data["error"] = processed_data_from_api["error"]
-        return final_data
-
-    except Exception as e:
-        logger.error(f"Critical error in get_job_data_from_db_or_api for SOC {soc_code} ('{standardized_soc_title}'): {e}", exc_info=True)
-        return {
-            "error": f"Failed to fetch or process data for '{standardized_soc_title}'. Source: bls_api_fetch_error_or_db_save_failed",
-            "job_title": job_title_query, "standardized_title": standardized_soc_title,
-            "occupation_code": soc_code, "job_category": job_category,
-            "source": "bls_api_fetch_error_or_db_save_failed"
-        }
-
-def format_database_row_to_app_schema(db_row_dict: Dict[str, Any], original_job_title: str, standardized_soc_title:str, job_category_from_soc: str) -> Dict[str, Any]:
-    """Formats a dictionary from a database row to the application's expected schema."""
-    
-    # Use the job_category derived from SOC code as it's more consistent
-    # than what might be stored from previous, potentially less accurate, categorizations.
-    # However, if the DB has a more specific one (not "General"), prefer that.
-    final_job_category = db_row_dict.get('job_category') or job_category_from_soc
-    if final_job_category == "General" and job_category_from_soc != "General":
-        final_job_category = job_category_from_soc
-    
-    risk_data = calculate_ai_risk_from_category(
-        final_job_category, # Use the determined job category
-        db_row_dict.get('occupation_code', '00-0000')
-    )
-    
-    # Generate employment trend data
-    current_emp = db_row_dict.get('current_employment')
-    projected_emp = db_row_dict.get('projected_employment')
-    trend_years = list(range(int(db_row_dict.get('ep_base_year', datetime.datetime.now().year - 1)), int(db_row_dict.get('ep_proj_year', datetime.datetime.now().year + 10)) + 1))
-    trend_employment: List[Optional[int]] = []
-    if current_emp is not None and projected_emp is not None and len(trend_years) > 1:
-        trend_employment = generate_employment_trend(current_emp, projected_emp, len(trend_years))
-    elif current_emp is not None: # If only current employment is available
-        trend_employment = [current_emp] * len(trend_years) # Flat line
-        if not trend_years: trend_years = [datetime.datetime.now().year]
+        except ValueError:
+             logger.warning(f"Could not parse ep_base_year ('{base_year_str}') or ep_proj_year ('{proj_year_str}') as integers.")
+             trend_years = list(range(datetime.datetime.now().year -1, datetime.datetime.now().year + 10)) # Default 10 year span
+             trend_employment = generate_employment_trend(current_emp, projected_emp, len(trend_years)) if current_emp and projected_emp else []
+    elif current_emp is not None: # Only current employment available
+        base_year_str = db_row.get('ep_base_year', str(datetime.datetime.now().year - 1))
+        try:
+            base_year = int(base_year_str)
+            trend_years = [base_year]
+            trend_employment = [current_emp]
+        except ValueError:
+             logger.warning(f"Could not parse ep_base_year ('{base_year_str}') as integer.")
 
 
     return {
-        "job_title": standardized_soc_title, # Use the official SOC title
-        "original_search_title": original_job_title, # Keep what user searched
-        "occupation_code": db_row_dict.get('occupation_code'),
-        "job_category": final_job_category,
-        "source": "bls_database_cache",
-        
-        "current_employment": db_row_dict.get('current_employment'),
-        "projected_employment": db_row_dict.get('projected_employment'),
-        "employment_change_numeric": db_row_dict.get('employment_change_numeric'),
-        "employment_change_percent": db_row_dict.get('percent_change'),
-        "annual_job_openings": db_row_dict.get('annual_job_openings'),
-        "median_wage": db_row_dict.get('median_wage'),
-        "mean_wage": db_row_dict.get('mean_wage'),
-        "oes_data_year": db_row_dict.get('oes_data_year'),
-        "ep_base_year": db_row_dict.get('ep_base_year'),
-        "ep_proj_year": db_row_dict.get('ep_proj_year'),
-        
-        "risk_scores": { # Nest risk scores
-            "year_1": risk_data["year_1_risk"],
-            "year_5": risk_data["year_5_risk"]
+        "job_title": db_row.get('standardized_title', db_row.get('job_title', 'N/A')),
+        "occupation_code": db_row.get('occupation_code'),
+        "job_category": job_category,
+        "bls_data": { # Nesting BLS specific fields
+            "employment": db_row.get('current_employment'),
+            "projected_employment": db_row.get('projected_employment'),
+            "employment_change_numeric": db_row.get('employment_change_numeric'),
+            "employment_change_percent": db_row.get('percent_change'),
+            "annual_job_openings": db_row.get('annual_job_openings'),
+            "median_wage": db_row.get('median_wage'),
+            "mean_wage": db_row.get('mean_wage'),
+            "oes_data_year": db_row.get('oes_data_year'),
+            "ep_base_year": db_row.get('ep_base_year'),
+            "ep_proj_year": db_row.get('ep_proj_year'),
+            "last_api_fetch": db_row.get('last_api_fetch'), # YYYY-MM-DD string
+            "last_updated_in_db": db_row.get('last_updated') # YYYY-MM-DD string
         },
-        "risk_category": risk_data["risk_category"],
-        "risk_factors": risk_data["risk_factors"],
-        "protective_factors": risk_data["protective_factors"],
-        "analysis": risk_data["analysis"], # Analysis is now generated with risk data
-        "summary": risk_data["summary"], # Summary is now generated with risk data
-
-        "trend_data": {
-            "years": trend_years if trend_employment else [],
-            "employment": trend_employment
-        },
-        "raw_oes_data_json": db_row_dict.get('raw_oes_data_json'),
-        "raw_ep_data_json": db_row_dict.get('raw_ep_data_json'),
-        "last_api_fetch": db_row_dict.get('last_api_fetch'),
-        "last_updated_in_db": db_row_dict.get('last_updated') # Use the correct column name from DB
-    }
-
-def format_api_processed_data_to_app_schema(processed_data: Dict[str, Any], original_job_title: str, standardized_soc_title:str, job_category_from_soc: str) -> Dict[str, Any]:
-    """Formats data processed from API calls into the application's expected schema."""
-    
-    # If processed_data itself indicates a critical error from the fetch_and_process_soc_data stage
-    if processed_data.get("source") == "bls_api_critical_failure_both" or \
-       (processed_data.get("error") and "Critical BLS API data fetch failure" in processed_data["error"]):
-        logger.error(f"Formatting API data: Critical error detected for '{original_job_title}' (SOC: {processed_data.get('occupation_code')}). Error: {processed_data.get('error')}")
-        return {
-            "error": processed_data.get("error", "Critical error fetching data from BLS API."),
-            "job_title": original_job_title,
-            "occupation_code": processed_data.get("occupation_code", "00-0000"),
-            "standardized_title": standardized_soc_title,
-            "job_category": job_category_from_soc, # Use category from SOC lookup if API failed critically
-            "source": processed_data.get("source", "api_processing_error_critical")
-        }
-
-    final_job_category = processed_data.get('job_category') or job_category_from_soc
-    if final_job_category == "General" and job_category_from_soc != "General": # Prefer SOC-derived category if API one is generic
-        final_job_category = job_category_from_soc
-
-    risk_data = calculate_ai_risk_from_category(
-        final_job_category,
-        processed_data.get('occupation_code', '00-0000')
-    )
-
-    current_emp = processed_data.get('current_employment')
-    projected_emp = processed_data.get('projected_employment')
-    
-    base_year_str = processed_data.get('ep_base_year', str(datetime.datetime.now().year -1))
-    proj_year_str = processed_data.get('ep_proj_year', str(datetime.datetime.now().year + 10))
-    
-    try:
-        base_year = int(float(base_year_str)) if base_year_str else datetime.datetime.now().year -1
-        proj_year = int(float(proj_year_str)) if proj_year_str else datetime.datetime.now().year + 10
-        trend_years = list(range(base_year, proj_year + 1))
-    except ValueError:
-        logger.warning(f"Could not parse EP years: base='{base_year_str}', proj='{proj_year_str}'. Defaulting years.")
-        trend_years = list(range(datetime.datetime.now().year -1, datetime.datetime.now().year + 10))
-
-
-    trend_employment: List[Optional[int]] = []
-    if current_emp is not None and projected_emp is not None and len(trend_years) > 1:
-        trend_employment = generate_employment_trend(current_emp, projected_emp, len(trend_years))
-    elif current_emp is not None:
-        trend_employment = [current_emp] * len(trend_years)
-        if not trend_years: trend_years = [datetime.datetime.now().year]
-
-
-    return {
-        "job_title": standardized_soc_title,
-        "original_search_title": original_job_title,
-        "occupation_code": processed_data.get('occupation_code'),
-        "job_category": final_job_category,
-        "source": processed_data.get("source", "bls_api_live_fetch"), # Use source from processed_data
-        
-        "current_employment": current_emp,
-        "projected_employment": projected_emp,
-        "employment_change_numeric": processed_data.get('employment_change_numeric'),
-        "employment_change_percent": processed_data.get('percent_change'),
-        "annual_job_openings": processed_data.get('annual_job_openings'),
-        "median_wage": processed_data.get('median_wage'),
-        "mean_wage": processed_data.get('mean_wage'),
-        "oes_data_year": processed_data.get('oes_data_year'),
-        "ep_base_year": str(base_year) if base_year else None, # ensure string
-        "ep_proj_year": str(proj_year) if proj_year else None, # ensure string
-        
         "risk_scores": {
-            "year_1": risk_data["year_1_risk"],
-            "year_5": risk_data["year_5_risk"]
+            "year_1": risk_scores.get("year_1_risk"),
+            "year_5": risk_scores.get("year_5_risk"),
         },
-        "risk_category": risk_data["risk_category"],
-        "risk_factors": risk_data["risk_factors"],
-        "protective_factors": risk_data["protective_factors"],
-        "analysis": risk_data["analysis"],
-        "summary": risk_data["summary"],
-
+        "risk_category": risk_scores.get("risk_category"),
+        "risk_factors": risk_scores.get("risk_factors"),
+        "protective_factors": risk_scores.get("protective_factors"),
+        "analysis": risk_scores.get("analysis"),
         "trend_data": {
-            "years": trend_years if trend_employment else [],
+            "years": trend_years,
             "employment": trend_employment
         },
-        "raw_oes_data_json": processed_data.get('raw_oes_data_json'),
-        "raw_ep_data_json": processed_data.get('raw_ep_data_json'),
-        "last_api_fetch": processed_data.get('last_api_fetch'),
-        "last_updated_in_db": processed_data.get('last_updated'), # This is the new 'last_updated' field
-        "error": processed_data.get("error") # Propagate any error messages
+        "source": "bls_database" # Indicate data came from local DB cache
     }
 
-
-# --- Risk Calculation (Simplified placeholder - relies on job_category from BLS) ---
 def calculate_ai_risk_from_category(job_category: str, occupation_code: str) -> Dict[str, Any]:
-    """Calculates AI displacement risk based on job category."""
-    logger.debug(f"Calculating AI risk for category: '{job_category}', SOC: '{occupation_code}'")
-    # Default risk scores
-    year_1_risk, year_5_risk = 30.0, 50.0
-    risk_cat_text = "Moderate"
-    
-    # Simplified risk assignment based on keywords in category
-    cat_lower = job_category.lower()
-    if any(k in cat_lower for k in ["computer", "mathematical", "engineering", "architecture"]):
-        year_1_risk, year_5_risk, risk_cat_text = 20.0, 45.0, "Moderate"
-    elif any(k in cat_lower for k in ["administrative", "office support", "production", "transportation"]):
-        year_1_risk, year_5_risk, risk_cat_text = 40.0, 70.0, "High"
-    elif any(k in cat_lower for k in ["healthcare", "education", "legal", "community", "social service"]):
-        year_1_risk, year_5_risk, risk_cat_text = 10.0, 25.0, "Low"
-    elif any(k in cat_lower for k in ["management", "business", "financial"]):
-        year_1_risk, year_5_risk, risk_cat_text = 25.0, 40.0, "Moderate"
-    elif any(k in cat_lower for k in ["sales", "food preparation", "personal care"]):
-        year_1_risk, year_5_risk, risk_cat_text = 35.0, 60.0, "High"
-    
-    # Generate generic factors for now
-    risk_factors = generate_risk_factors(job_category, occupation_code) # Pass SOC for potential future use
-    protective_factors = generate_protective_factors(job_category, occupation_code)
-    
-    analysis_text = f"The role, falling under the '{job_category}' category (SOC: {occupation_code}), faces a {risk_cat_text.lower()} risk of AI displacement. "
-    analysis_text += "Key tasks may be impacted by automation, while skills requiring complex human judgment and interaction are likely to remain valuable."
-    
-    summary_text = f"Overall risk for '{job_category}' (SOC: {occupation_code}) is {risk_cat_text}. Consider focusing on {protective_factors[0].lower() if protective_factors else 'strategic upskilling'}."
-
-
-    return {
-        "year_1_risk": year_1_risk,
-        "year_5_risk": year_5_risk,
-        "risk_category": risk_cat_text,
-        "risk_factors": risk_factors,
-        "protective_factors": protective_factors,
-        "analysis": analysis_text,
-        "summary": summary_text
+    """Calculates AI displacement risk based on job category and specific SOC patterns."""
+    # Default risk if no specific category matches
+    risk_profile = {
+        "year_1_risk": 20.0, "year_5_risk": 40.0, "risk_category": "Moderate",
+        "risk_factors": ["General task automation", "AI-driven efficiency improvements"],
+        "protective_factors": ["Complex problem-solving", "Human interaction and empathy"]
     }
 
-def generate_risk_factors(job_category: str, occupation_code: str) -> List[str]:
-    """Generates generic risk factors based on job category."""
-    base_factors = [
-        "Automation of routine data entry and processing tasks.",
-        "AI tools assisting or replacing standard reporting and analysis.",
-        "Predictable physical tasks being handled by robotics.",
-        "Customer interaction and support via AI chatbots and virtual assistants."
-    ]
-    cat_lower = job_category.lower()
-    if any(k in cat_lower for k in ["computer", "mathematical", "engineering"]):
-        return base_factors[:2] + ["AI-driven code generation and software testing.", "Automated system monitoring and maintenance."]
-    if any(k in cat_lower for k in ["administrative", "office support", "production"]):
-        return ["High degree of repetitive tasks.", "Structured data processing.", "Well-defined procedures amenable to automation."] + base_factors[:1]
-    return base_factors[:4] # Return a default of 4 factors
+    # More granular risk profiles based on SOC prefixes and keywords in category
+    if job_category:
+        cat_lower = job_category.lower()
+        if "computer" in cat_lower or "mathematical" in cat_lower or occupation_code.startswith("15-"):
+            risk_profile = {"year_1_risk": 25.0, "year_5_risk": 45.0, "risk_category": "Moderate",
+                            "risk_factors": ["Routine coding automation", "AI-assisted data analysis", "Automated testing"],
+                            "protective_factors": ["Complex system architecture", "Novel algorithm design", "Cybersecurity expertise"]}
+        elif "healthcare practitioners" in cat_lower or occupation_code.startswith("29-"):
+            risk_profile = {"year_1_risk": 10.0, "year_5_risk": 25.0, "risk_category": "Low",
+                            "risk_factors": ["AI diagnostic assistance", "Automated record keeping", "Robotic surgery assistance"],
+                            "protective_factors": ["Direct patient care & empathy", "Complex clinical decision-making", "Ethical medical judgments"]}
+        elif "education" in cat_lower or occupation_code.startswith("25-"):
+            risk_profile = {"year_1_risk": 15.0, "year_5_risk": 30.0, "risk_category": "Low",
+                            "risk_factors": ["AI tutoring systems", "Automated grading", "Online content delivery"],
+                            "protective_factors": ["In-person mentorship", "Social-emotional development", "Curriculum innovation"]}
+        elif "administrative support" in cat_lower or occupation_code.startswith("43-"):
+            risk_profile = {"year_1_risk": 50.0, "year_5_risk": 75.0, "risk_category": "Very High",
+                            "risk_factors": ["Data entry automation", "AI scheduling assistants", "Automated customer correspondence"],
+                            "protective_factors": ["Complex office management", "Handling sensitive interpersonal issues", "Executive-level support"]}
+        elif "transportation" in cat_lower or occupation_code.startswith("53-"):
+            risk_profile = {"year_1_risk": 40.0, "year_5_risk": 70.0, "risk_category": "High",
+                            "risk_factors": ["Autonomous driving technology", "Drone delivery systems", "AI logistics optimization"],
+                            "protective_factors": ["Handling unexpected road conditions", "Last-mile delivery complexities", "Passenger interaction (for some roles)"]}
+        elif "production" in cat_lower or occupation_code.startswith("51-"):
+             risk_profile = {"year_1_risk": 45.0, "year_5_risk": 70.0, "risk_category": "High",
+                            "risk_factors": ["Robotics in assembly lines", "Automated quality control", "AI-driven process optimization"],
+                            "protective_factors": ["Complex machinery maintenance", "Custom fabrication", "Supervising automated systems"]}
+        elif "sales" in cat_lower or occupation_code.startswith("41-"):
+             risk_profile = {"year_1_risk": 35.0, "year_5_risk": 60.0, "risk_category": "High",
+                            "risk_factors": ["E-commerce and online sales platforms", "AI-powered recommendation engines", "Automated customer outreach"],
+                            "protective_factors": ["Complex B2B sales negotiations", "Building long-term client relationships", "High-value consultative selling"]}
 
-def generate_protective_factors(job_category: str, occupation_code: str) -> List[str]:
-    """Generates generic protective factors based on job category."""
-    base_factors = [
-        "Requires complex problem-solving and critical thinking.",
-        "Involves significant interpersonal interaction and empathy.",
-        "Needs high levels of creativity and original thought.",
-        "Requires adaptability in unpredictable environments."
-    ]
-    cat_lower = job_category.lower()
-    if any(k in cat_lower for k in ["healthcare", "education", "social service", "legal"]):
-        return base_factors[:2] + ["Ethical judgment and nuanced decision-making.", "Building trust and rapport with individuals."]
-    if any(k in cat_lower for k in ["management", "arts", "design"]):
-        return ["Strategic planning and foresight.", "Leadership and team motivation."] + base_factors[2:]
-    return base_factors[:4]
 
-def generate_employment_trend(current_emp: Optional[int], projected_emp: Optional[int], num_years: int) -> List[Optional[int]]:
-    """Generates a simple linear trend for employment values."""
+    # Basic analysis text
+    risk_profile["analysis"] = f"The role, categorized under '{job_category}', faces a {risk_profile['risk_category'].lower()} risk. Key factors include {', '.join(risk_profile['risk_factors'][:2])}, while protective elements involve {', '.join(risk_profile['protective_factors'][:2])}."
+    return risk_profile
+
+def generate_employment_trend(current_emp: Optional[int], projected_emp: Optional[int], num_years: int) -> List[int]:
+    """Generates a list of employment numbers for a trend line."""
     if current_emp is None or projected_emp is None or num_years <= 1:
-        return [current_emp] * num_years if current_emp is not None and num_years > 0 else []
+        return [val for val in [current_emp, projected_emp] if val is not None]
 
-    trend: List[Optional[int]] = []
-    # Ensure we don't divide by zero if num_years is 1, though already checked.
-    # If num_years is 0 or less, this will also be problematic, but the check num_years <=1 handles it.
-    annual_change = (projected_emp - current_emp) / (num_years -1) if num_years > 1 else 0
-    
-    for i in range(num_years):
-        trend.append(int(current_emp + (annual_change * i)))
+    # Ensure numeric types for calculation
+    try:
+        current = int(current_emp)
+        projected = int(projected_emp)
+    except (ValueError, TypeError):
+        logger.warning(f"Invalid employment numbers for trend generation: current='{current_emp}', projected='{projected_emp}'")
+        return []
+
+    # Linear interpolation
+    trend = [int(current + (projected - current) * i / (num_years - 1)) for i in range(num_years)]
     return trend
 
 def get_all_soc_codes_from_db(engine: sqlalchemy.engine.Engine) -> List[Tuple[str, str]]:
-    """Retrieves all unique SOC codes and their standardized titles from the database."""
+    """Retrieves all unique SOC codes and their primary titles from the database."""
     try:
         with engine.connect() as conn:
             query = text("SELECT DISTINCT occupation_code, standardized_title FROM bls_job_data ORDER BY occupation_code")
             result = conn.execute(query)
             return [(row[0], row[1]) for row in result.fetchall()]
     except SQLAlchemyError as e:
-        logger.error(f"Database error fetching all SOC codes: {e}", exc_info=True)
+        logger.error(f"Error fetching all SOC codes from database: {e}", exc_info=True)
         return []
 
-def get_job_titles_for_autocomplete() -> List[Dict[str, str]]:
+def get_job_titles_for_autocomplete(engine: sqlalchemy.engine.Engine) -> List[Dict[str, Any]]:
     """
-    Fetches job titles from the database for autocomplete functionality.
-    Prioritizes standardized titles and includes original job titles as aliases.
+    Retrieves job titles for autocomplete, prioritizing standardized titles.
     """
-    engine = get_db_engine()
-    job_titles_set = set() # To avoid duplicates if a job_title is same as standardized_title
-    autocomplete_list = []
-
     try:
         with engine.connect() as conn:
-            # Fetch standardized titles first (these are preferred)
-            query_std = text("SELECT DISTINCT standardized_title, occupation_code FROM bls_job_data WHERE standardized_title IS NOT NULL ORDER BY standardized_title")
-            result_std = conn.execute(query_std)
-            for row in result_std:
-                title, soc = row._mapping['standardized_title'], row._mapping['occupation_code']
-                if title and title not in job_titles_set:
-                    autocomplete_list.append({"title": title, "soc_code": soc, "is_primary": True})
-                    job_titles_set.add(title)
-            
-            # Fetch original job_titles as aliases if they are different
-            query_orig = text("SELECT DISTINCT job_title, occupation_code, standardized_title FROM bls_job_data WHERE job_title IS NOT NULL ORDER BY job_title")
-            result_orig = conn.execute(query_orig)
-            for row in result_orig:
-                title, soc, std_title = row._mapping['job_title'], row._mapping['occupation_code'], row._mapping['standardized_title']
-                if title and title != std_title and title not in job_titles_set:
-                    autocomplete_list.append({"title": title, "soc_code": soc, "is_primary": False})
-                    job_titles_set.add(title)
-            
-            # Add static mappings as non-primary if not already present
-            for title_alias, soc_code_alias in JOB_TITLE_TO_SOC_STATIC.items():
-                if title_alias not in job_titles_set:
-                    autocomplete_list.append({"title": title_alias.title(), "soc_code": soc_code_alias, "is_primary": False})
-                    job_titles_set.add(title_alias)
-
-            # Sort the final list by title for consistent display
-            autocomplete_list.sort(key=lambda x: x['title'])
-
-        logger.info(f"Loaded {len(autocomplete_list)} job titles for autocomplete.")
-        return autocomplete_list
+            # Fetch standardized titles first, then other job titles
+            query = text("""
+                SELECT standardized_title AS title, occupation_code, TRUE as is_primary
+                FROM bls_job_data
+                GROUP BY standardized_title, occupation_code
+                UNION ALL
+                SELECT job_title AS title, occupation_code, FALSE as is_primary
+                FROM bls_job_data
+                WHERE job_title != standardized_title
+                ORDER BY title
+            """)
+            result = conn.execute(query)
+            # Use a set to ensure unique titles if a job_title happens to be a standardized_title of another SOC
+            seen_titles = set()
+            job_titles = []
+            for row in result:
+                if row.title.lower() not in seen_titles:
+                    job_titles.append({"title": row.title, "soc_code": row.occupation_code, "is_primary": row.is_primary})
+                    seen_titles.add(row.title.lower())
+            return job_titles
     except SQLAlchemyError as e:
-        logger.error(f"Database error fetching job titles for autocomplete: {e}", exc_info=True)
-        # Fallback to static list if DB fails
-        return [{"title": k.title(), "soc_code": v, "is_primary": True} for k,v in JOB_TITLE_TO_SOC_STATIC.items()]
-    except Exception as e_gen:
-        logger.error(f"Unexpected error fetching job titles for autocomplete: {e_gen}", exc_info=True)
-        return [{"title": k.title(), "soc_code": v, "is_primary": True} for k,v in JOB_TITLE_TO_SOC_STATIC.items()]
+        logger.error(f"Error fetching job titles for autocomplete: {e}", exc_info=True)
+        return []
 
 if __name__ == "__main__":
-    # Example usage (for testing)
-    # Ensure DATABASE_URL is set in your environment if you run this directly
-    if not os.environ.get("DATABASE_URL"):
-        print("DATABASE_URL not set. Please set it to test bls_job_mapper.py directly.")
-    else:
-        logging.basicConfig(level=logging.INFO)
-        logger.setLevel(logging.INFO) # Ensure logger for this module is also INFO for testing
-        
-        test_job_titles = [
-            "Software Developer", "Registered Nurse", "Truck Driver", 
-            "Financial Analyst", "Marketing Manager", "Teacher", "Lawyer",
-            "Data Entry Keyer", # Example of a potentially high-risk job
-            "Chief Executive",    # Example of a management role
-            "Robotics Engineer" # A job title that might not be in static map
-        ]
-        
-        for title in test_job_titles:
-            print(f"\n--- Testing: {title} ---")
-            data = get_job_data_from_db_or_api(title)
-            if "error" in data:
-                print(f"Error: {data['error']}")
-                if data.get("message"): print(f"Message: {data['message']}")
-            else:
-                print(f"Job Title (Standardized): {data.get('job_title')}")
-                print(f"Original Search: {data.get('original_search_title')}")
-                print(f"SOC Code: {data.get('occupation_code')}")
-                print(f"Job Category: {data.get('job_category')}")
-                print(f"Source: {data.get('source')}")
-                print(f"Current Employment: {data.get('current_employment')}")
-                print(f"Projected Employment: {data.get('projected_employment')}")
-                print(f"Employment Change %: {data.get('employment_change_percent')}")
-                print(f"Annual Job Openings: {data.get('annual_job_openings')}")
-                print(f"Median Wage: {data.get('median_wage')}")
-                print(f"Risk Category: {data.get('risk_category')}")
-                print(f"5-Year Risk: {data.get('risk_scores', {}).get('year_5')}%")
-                print(f"Last API Fetch: {data.get('last_api_fetch')}")
-                print(f"Last Updated in DB: {data.get('last_updated_in_db')}")
-                # print(f"Risk Factors: {data.get('risk_factors')}")
-                # print(f"Protective Factors: {data.get('protective_factors')}")
-                # print(f"Analysis: {data.get('analysis')}")
-                # print(f"Summary: {data.get('summary')}")
+    # Example usage (requires DATABASE_URL to be set)
+    logging.basicConfig(level=logging.INFO)
+    logger.setLevel(logging.DEBUG) # Enable debug for this test
+    try:
+        test_engine = get_db_engine()
+        logger.info("Database engine obtained.")
 
-        print("\n--- Testing Autocomplete ---")
-        autocomplete_titles = get_job_titles_for_autocomplete()
-        print(f"Loaded {len(autocomplete_titles)} titles for autocomplete.")
-        if autocomplete_titles:
-            print("First 5 autocomplete titles:")
-            for item in autocomplete_titles[:5]:
-                print(item)
-        
-        print("\n--- Testing get_all_soc_codes_from_db ---")
-        all_socs = get_all_soc_codes_from_db(get_db_engine())
-        print(f"Found {len(all_socs)} unique SOC codes in DB.")
-        if all_socs:
-            print("First 5 SOCs from DB:")
-            for soc, title_std in all_socs[:5]:
-                print(f"{soc}: {title_std}")
+        # Test find_soc_code_and_title
+        soc_code, std_title, category = find_soc_code_and_title("Software Developer", test_engine)
+        logger.info(f"Found for 'Software Developer': SOC={soc_code}, Title='{std_title}', Category='{category}'")
+
+        soc_code_cook, std_title_cook, category_cook = find_soc_code_and_title("Cook", test_engine)
+        logger.info(f"Found for 'Cook': SOC={soc_code_cook}, Title='{std_title_cook}', Category='{category_cook}'")
+
+
+        # Test fetch_and_process_soc_data (will call BLS API if not fresh in DB)
+        logger.info("\nTesting fetch_and_process_soc_data for 'Registered Nurse' (SOC: 29-1141)")
+        rn_data = fetch_and_process_soc_data("29-1141", "Registered Nurse", test_engine, force_api_fetch=False)
+        if rn_data:
+            logger.info(f"Registered Nurse Data: Title='{rn_data.get('job_title')}', Risk='{rn_data.get('risk_category')}', Employment='{rn_data.get('bls_data', {}).get('employment')}'")
+            logger.debug(f"Full RN Data: {json.dumps(rn_data, indent=2)}")
+        else:
+            logger.error("Failed to get data for Registered Nurse.")
+
+        logger.info("\nTesting fetch_and_process_soc_data for 'Data Entry Keyer' (SOC: 43-9021) with forced API fetch")
+        de_data = fetch_and_process_soc_data("43-9021", "Data Entry Keyer", test_engine, force_api_fetch=True)
+        if de_data:
+            logger.info(f"Data Entry Keyer Data: Title='{de_data.get('job_title')}', Risk='{de_data.get('risk_category')}', Employment='{de_data.get('bls_data', {}).get('employment')}'")
+        else:
+            logger.error("Failed to get data for Data Entry Keyer.")
+
+        # Test get_bls_data_from_db directly
+        logger.info("\nTesting get_bls_data_from_db for SOC '15-1252'")
+        db_sw_dev_data = get_bls_data_from_db("15-1252", test_engine)
+        if db_sw_dev_data:
+            logger.info(f"DB Data for 15-1252 (Software Developers): Fetched on {db_sw_dev_data.get('last_api_fetch')}, Updated in DB on {db_sw_dev_data.get('last_updated')}")
+            formatted_for_app = format_database_row_to_app_schema(db_sw_dev_data)
+            logger.info(f"Formatted App Data: Risk Category='{formatted_for_app.get('risk_category')}', 5-Year Risk='{formatted_for_app.get('risk_scores',{}).get('year_5')}%'")
+
+        else:
+            logger.info("No fresh data for 15-1252 in DB, would require API call in app.")
+
+        logger.info("\nTesting get_all_soc_codes_from_db")
+        all_codes = get_all_soc_codes_from_db(test_engine)
+        logger.info(f"Found {len(all_codes)} unique SOC codes in DB. First 5: {all_codes[:5]}")
+
+        logger.info("\nTesting get_job_titles_for_autocomplete")
+        autocomplete_titles = get_job_titles_for_autocomplete(test_engine)
+        logger.info(f"Found {len(autocomplete_titles)} titles for autocomplete. First 5: {autocomplete_titles[:5]}")
+
+
+    except ValueError as ve:
+        logger.critical(f"Test script failed due to configuration error: {ve}")
+    except SQLAlchemyError as se:
+        logger.critical(f"Test script failed due to database error: {se}", exc_info=True)
+    except Exception as e:
+        logger.critical(f"An unexpected error occurred in the test script: {e}", exc_info=True)
 
