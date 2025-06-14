@@ -183,11 +183,12 @@ st.markdown("<p style='text-align: center; color: #666666; font-weight: bold; fo
 
 # Database connection setup (with fallback to in-memory data if not available)
 try:
-    from database import save_job_search, get_popular_searches, get_highest_risk_jobs, get_lowest_risk_jobs, get_recent_searches
+    from database import save_job_search, get_popular_searches, get_highest_risk_jobs, get_lowest_risk_jobs, get_recent_searches, engine
     database_available = True
 except:
     from db_fallback import save_job_search, get_popular_searches, get_highest_risk_jobs, get_lowest_risk_jobs, get_recent_searches
     database_available = False
+    engine = None # Ensure engine is None if database import fails
 
 def check_data_refresh():
     """Check if data needs to be refreshed (daily schedule to keep Supabase active)"""
@@ -1175,7 +1176,7 @@ with tabs[1]:  # Job Comparison tab
         """, unsafe_allow_html=True)
 
 # --- Admin Controls Section (in Sidebar) ---
-if database_available and engine:
+if database_available and engine: # Check if engine is defined and database is available
     with st.sidebar.expander("⚙️ ADMIN CONTROLS - Click to Expand", expanded=False):
         st.markdown("**Database Population & Management**")
         
