@@ -1,93 +1,119 @@
 """
-Fallback functionality when database is not available.
-This module provides stub functions that can be used instead of actual database functions.
+Database Fallback Module (db_fallback.py)
+
+This module provides fallback functions for database operations when the primary
+database connection is unavailable.
+
+It strictly adheres to the requirement of NOT using any fictional or synthetic data.
+Instead, it returns empty results or error indicators, logging that the database
+is inaccessible.
 """
 
-def save_job_search(job_title, risk_data):
-    """
-    Stub function for saving job search data when DB is not available
-    """
-    print(f"Would save job search for '{job_title}' if database was available")
-    return True
+import logging
+import datetime
 
-def get_popular_searches(limit=5):
-    """
-    Return sample popular searches when DB is not available
-    """
-    return [
-        {"job_title": "Software Engineer", "count": 42},
-        {"job_title": "Data Scientist", "count": 38},
-        {"job_title": "Nurse", "count": 27},
-        {"job_title": "Teacher", "count": 21},
-        {"job_title": "Truck Driver", "count": 19}
-    ][:limit]
+# Configure logging for this module
+logger = logging.getLogger("db_fallback")
+logger.setLevel(logging.WARNING)
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+if not logger.handlers:
+    logger.addHandler(handler)
 
-def get_highest_risk_jobs(limit=5):
-    """
-    Return sample highest risk jobs when DB is not available
-    """
-    return [
-        {"job_title": "Data Entry Clerk", "avg_risk": 85.2},
-        {"job_title": "Customer Service Representative", "avg_risk": 79.8},
-        {"job_title": "Cashier", "avg_risk": 78.6},
-        {"job_title": "Bookkeeper", "avg_risk": 75.3},
-        {"job_title": "Truck Driver", "avg_risk": 73.7}
-    ][:limit]
+DB_UNAVAILABLE_MESSAGE = "Database is unavailable. Returning empty/error state. No data will be saved or retrieved."
 
-def get_lowest_risk_jobs(limit=5):
+def save_job_search(job_title: str, risk_data: dict) -> bool:
     """
-    Return sample lowest risk jobs when DB is not available
-    """
-    return [
-        {"job_title": "Therapist", "avg_risk": 8.5},
-        {"job_title": "Healthcare Manager", "avg_risk": 12.3},
-        {"job_title": "Human Resources Director", "avg_risk": 14.8},
-        {"job_title": "Teacher", "avg_risk": 18.9},
-        {"job_title": "Social Worker", "avg_risk": 21.4}
-    ][:limit]
-
-def get_recent_searches(limit=10):
-    """
-    Return sample recent searches when DB is not available
-    """
-    import datetime
+    Fallback for saving job search data. Does not save any data.
     
-    now = datetime.datetime.now()
+    Args:
+        job_title (str): The job title that was searched.
+        risk_data (dict): Dictionary containing risk assessment data.
+        
+    Returns:
+        bool: Always False, indicating the save operation failed.
+    """
+    logger.warning(f"Attempted to save job search for '{job_title}'. {DB_UNAVAILABLE_MESSAGE}")
+    return False
+
+def get_popular_searches(limit: int = 5) -> list:
+    """
+    Fallback for getting popular job searches. Returns an empty list.
     
-    return [
-        {
-            "job_title": "Software Engineer",
-            "year_1_risk": 32.5,
-            "year_5_risk": 48.7,
-            "timestamp": now - datetime.timedelta(minutes=5),
-            "risk_category": "Moderate"
-        },
-        {
-            "job_title": "Data Scientist",
-            "year_1_risk": 27.3,
-            "year_5_risk": 42.1,
-            "timestamp": now - datetime.timedelta(minutes=12),
-            "risk_category": "Moderate"
-        },
-        {
-            "job_title": "Teacher",
-            "year_1_risk": 18.9,
-            "year_5_risk": 35.6,
-            "timestamp": now - datetime.timedelta(minutes=18),
-            "risk_category": "Moderate"
-        },
-        {
-            "job_title": "Nurse",
-            "year_1_risk": 10.2,
-            "year_5_risk": 24.8,
-            "timestamp": now - datetime.timedelta(minutes=25),
-            "risk_category": "Low"
-        },
-        {
-            "job_title": "Truck Driver",
-            "year_1_risk": 65.3,
-            "year_5_risk": 82.7,
-            "timestamp": now - datetime.timedelta(minutes=37),
-            "risk_category": "High"
-        }
-    ][:limit]
+    Args:
+        limit (int): Maximum number of results to return.
+        
+    Returns:
+        list: An empty list.
+    """
+    logger.warning(f"Attempted to get popular searches. {DB_UNAVAILABLE_MESSAGE}")
+    return []
+
+def get_highest_risk_jobs(limit: int = 5) -> list:
+    """
+    Fallback for getting jobs with the highest average year 5 risk. Returns an empty list.
+    
+    Args:
+        limit (int): Maximum number of results to return.
+        
+    Returns:
+        list: An empty list.
+    """
+    logger.warning(f"Attempted to get highest risk jobs. {DB_UNAVAILABLE_MESSAGE}")
+    return []
+
+def get_lowest_risk_jobs(limit: int = 5) -> list:
+    """
+    Fallback for getting jobs with the lowest average year 5 risk. Returns an empty list.
+    
+    Args:
+        limit (int): Maximum number of results to return.
+        
+    Returns:
+        list: An empty list.
+    """
+    logger.warning(f"Attempted to get lowest risk jobs. {DB_UNAVAILABLE_MESSAGE}")
+    return []
+
+def get_recent_searches(limit: int = 10) -> list:
+    """
+    Fallback for getting recent job searches. Returns an empty list.
+    
+    Args:
+        limit (int): Maximum number of results to return.
+        
+    Returns:
+        list: An empty list.
+    """
+    logger.warning(f"Attempted to get recent searches. {DB_UNAVAILABLE_MESSAGE}")
+    return []
+
+# You can add other database-related functions here if needed,
+# ensuring they also return empty/error states and log appropriately.
+
+if __name__ == "__main__":
+    # Example usage (for testing the fallback module directly)
+    logger.info("Testing db_fallback module...")
+    
+    # Test save_job_search
+    save_result = save_job_search("Test Job", {"year_1_risk": 0.1, "year_5_risk": 0.5})
+    logger.info(f"save_job_search result: {save_result} (Expected: False)")
+    
+    # Test get_popular_searches
+    popular_searches = get_popular_searches()
+    logger.info(f"get_popular_searches result: {popular_searches} (Expected: [])")
+    
+    # Test get_highest_risk_jobs
+    highest_risk = get_highest_risk_jobs()
+    logger.info(f"get_highest_risk_jobs result: {highest_risk} (Expected: [])")
+    
+    # Test get_lowest_risk_jobs
+    lowest_risk = get_lowest_risk_jobs()
+    logger.info(f"get_lowest_risk_jobs result: {lowest_risk} (Expected: [])")
+    
+    # Test get_recent_searches
+    recent_searches = get_recent_searches()
+    logger.info(f"get_recent_searches result: {recent_searches} (Expected: [])")
+    
+    logger.info("db_fallback module test complete.")
