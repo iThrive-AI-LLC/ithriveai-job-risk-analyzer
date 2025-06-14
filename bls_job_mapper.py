@@ -12,8 +12,10 @@ import json
 import datetime
 import logging
 from typing import Dict, Any, List, Optional, Tuple, Union
+import threading # Added for engine lock
 
 import pandas as pd
+import sqlalchemy # Added for sqlalchemy.engine.Engine type hint
 from sqlalchemy import create_engine, text, Table, Column, Integer, String, Float, MetaData, inspect, Text, TIMESTAMP
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -295,7 +297,6 @@ def get_bls_data_from_db(occupation_code: str, engine: sqlalchemy.engine.Engine)
     except SQLAlchemyError as e:
         logger.error(f"Database error fetching data for SOC {occupation_code}: {e}", exc_info=True)
         return None
-
 
 def save_bls_data_to_db(data_to_save: Dict[str, Any], engine: sqlalchemy.engine.Engine) -> bool:
     """Saves or updates BLS data in the database."""
