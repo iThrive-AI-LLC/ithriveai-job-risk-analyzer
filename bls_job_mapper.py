@@ -624,5 +624,3 @@ if __name__ == '__main__':
             logger.error(f"Critical exception during test for '{title}': {e}", exc_info=True)
 
     logger.info("\nbls_job_mapper.py direct tests complete.")
-
-logger.info('bls_job_mapper.py loaded successfully and get_complete_job_data function should be defined.')
