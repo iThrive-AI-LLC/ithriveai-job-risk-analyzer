@@ -26,10 +26,15 @@ try:
     from database import engine as db_engine, Base as db_Base, Session as db_Session, \
                          save_job_search, get_popular_searches, get_highest_risk_jobs, \
                          get_lowest_risk_jobs, get_recent_searches, JobSearch
-    database_available = True
-    logger.info("Successfully imported database modules.")
+    database_available = True if db_engine is not None else False # Check if engine was successfully created
+    if database_available:
+        logger.info("Successfully imported database modules and engine is available.")
+    else:
+        logger.error("Database modules imported, but engine is None. Using fallback.")
+        from db_fallback import save_job_search, get_popular_searches, get_highest_risk_jobs, \
+                                get_lowest_risk_jobs, get_recent_searches
 except ImportError as e:
-    logger.error(f"Failed to import database modules: {e}. Using fallback data.")
+    logger.error(f"Failed to import database modules: {e}. Using fallback data.", exc_info=True)
     from db_fallback import save_job_search, get_popular_searches, get_highest_risk_jobs, \
                             get_lowest_risk_jobs, get_recent_searches
     database_available = False
@@ -39,10 +44,10 @@ except ImportError as e:
 import job_api_integration_database_only as job_api_integration
 import simple_comparison
 import career_navigator
-import bls_job_mapper # For TARGET_SOC_CODES
-
-# Import the autocomplete functionality
+import bls_job_mapper 
+from bls_job_mapper import TARGET_SOC_CODES # Import the list for admin tool
 from job_title_autocomplete_v2 import job_title_autocomplete
+from sqlalchemy import text # Import for keep-alive and health check
 
 # --- Keep-Alive Functionality ---
 def keep_alive():
@@ -54,11 +59,14 @@ def keep_alive():
             if database_available and db_engine:
                 with db_engine.connect() as connection:
                     connection.execute(text("SELECT 1"))
+                st.session_state.last_keep_alive_ping = datetime.datetime.now(datetime.timezone.utc)
                 logger.info("Keep-alive: Database ping successful.")
             else:
                 logger.info("Keep-alive: Database not available, skipping ping.")
         except Exception as e:
             logger.error(f"Keep-alive: Database ping failed: {e}")
+            st.session_state.last_keep_alive_ping_error = str(e)
+
 
 # Start keep-alive thread only once
 if "keep_alive_started" not in st.session_state:
@@ -79,7 +87,7 @@ if not bls_api_key:
         logger.warning(f"Could not access Streamlit secrets for BLS_API_KEY: {e}")
 
 if bls_api_key:
-    logger.info("BLS API key loaded from Streamlit secrets.")
+    logger.info("BLS API key loaded.")
 else:
     logger.error("BLS_API_KEY is not configured. App will rely on database and may have limited real-time data functionality.")
 
@@ -150,6 +158,12 @@ st.markdown("<p style='text-align: center; color: #4CACE5; font-size: 24px; font
 st.markdown("<p style='text-align: center; color: #666666; font-weight: bold; font-size: 16px;'>Discover how AI might impact your career in the next 5 years and get personalized recommendations.</p>", unsafe_allow_html=True)
 st.markdown("<p style='text-align: center; color: #666666; font-size: 14px;'>📊 This application uses authentic Bureau of Labor Statistics (BLS) data only. No synthetic or fictional data is used.</p>", unsafe_allow_html=True)
 
+# --- Database Availability Check ---
+if not database_available:
+    st.error("Database connection failed. The application is in a limited mode or cannot function. Please check the database configuration or contact support.")
+    if not bls_api_key:
+        st.warning("Additionally, the BLS API key is not configured. Real-time data fetching is also unavailable.")
+    st.stop()
 
 # --- Admin Controls Setup ---
 if 'admin_current_soc_index' not in st.session_state:
@@ -159,22 +173,20 @@ if 'admin_auto_run_batch' not in st.session_state:
 if 'admin_failed_socs' not in st.session_state:
     st.session_state.admin_failed_socs = []
 if 'admin_target_socs' not in st.session_state:
-    st.session_state.admin_target_socs = [] # Will be loaded from bls_job_mapper
+    st.session_state.admin_target_socs = [] 
 if 'admin_processed_count' not in st.session_state:
     st.session_state.admin_processed_count = 0
 
-# Load target SOCs once
 if not st.session_state.admin_target_socs:
     try:
         st.session_state.admin_target_socs = bls_job_mapper.TARGET_SOC_CODES
         logger.info(f"Admin: Successfully loaded {len(st.session_state.admin_target_socs)} target SOC codes.")
-    except AttributeError: # TARGET_SOC_CODES might not be defined yet if bls_job_mapper is old
+    except AttributeError:
         logger.error("Admin: TARGET_SOC_CODES not found in bls_job_mapper. Admin tool will be limited.")
-        st.session_state.admin_target_socs = [] # Ensure it's a list
+        st.session_state.admin_target_socs = []
 
 # --- Admin Dashboard Logic ---
 def run_batch_processing(batch_size, api_delay):
-    """Processes a batch of SOC codes."""
     processed_in_batch = 0
     start_index = st.session_state.admin_current_soc_index
     target_socs = st.session_state.admin_target_socs
@@ -185,20 +197,18 @@ def run_batch_processing(batch_size, api_delay):
         return
 
     for i in range(start_index, min(start_index + batch_size, len(target_socs))):
-        if not st.session_state.admin_auto_run_batch: # Check if paused
+        if not st.session_state.admin_auto_run_batch:
             logger.info("Admin: Batch processing paused by user.")
             break 
             
         current_soc_info = target_socs[i]
-        st.session_state.admin_current_soc_index = i # Update current index for UI
         
         soc_code = None
         job_title_for_api = None
 
-        # Handle tuple structure from TARGET_SOC_CODES
         if isinstance(current_soc_info, tuple) and len(current_soc_info) == 2:
             soc_code = current_soc_info[0]
-            job_title_for_api = current_soc_info[1] # Use the title from the tuple for API call context
+            job_title_for_api = current_soc_info[1]
             logger.info(f"Admin: Processing SOC tuple (Index {i}): {soc_code} - {job_title_for_api}")
         elif isinstance(current_soc_info, dict) and "soc_code" in current_soc_info and "title" in current_soc_info:
             soc_code = current_soc_info["soc_code"]
@@ -206,14 +216,14 @@ def run_batch_processing(batch_size, api_delay):
             logger.info(f"Admin: Processing SOC dict (Index {i}): {soc_code} - {job_title_for_api}")
         else:
             logger.error(f"Admin: Invalid structure for TARGET_SOC_CODES at index {i}: {current_soc_info}. Skipping.")
-            if current_soc_info not in st.session_state.admin_failed_socs:
+            if {"soc_info": str(current_soc_info), "reason": "Invalid structure"} not in st.session_state.admin_failed_socs:
                  st.session_state.admin_failed_socs.append({"soc_info": str(current_soc_info), "reason": "Invalid structure"})
-            st.session_state.admin_current_soc_index += 1 # Ensure progress
-            st.session_state.admin_processed_count +=1 # Count as processed (or attempted)
-            continue # Skip to the next item
+            st.session_state.admin_current_soc_index = i + 1 # Ensure progress
+            st.session_state.admin_processed_count +=1 
+            continue
 
         if soc_code and job_title_for_api:
-            progress_bar.progress((i + 1) / len(target_socs), text=f"Processing: {job_title_for_api} ({soc_code})")
+            progress_bar.progress((st.session_state.admin_processed_count + 1) / len(target_socs) if target_socs else 0, text=f"Processing: {job_title_for_api} ({soc_code})")
             status_message.info(f"Fetching and processing: {job_title_for_api} ({soc_code})...")
             
             try:
@@ -224,27 +234,27 @@ def run_batch_processing(batch_size, api_delay):
                 else:
                     logger.error(f"Admin: Failed to process {soc_code} - {job_title_for_api}: {message}")
                     status_message.error(f"Failed: {job_title_for_api} ({soc_code}) - {message}")
-                    if {"soc_code": soc_code, "reason": message} not in st.session_state.admin_failed_socs:
+                    if {"soc_code": soc_code, "title": job_title_for_api, "reason": message} not in st.session_state.admin_failed_socs:
                         st.session_state.admin_failed_socs.append({"soc_code": soc_code, "title": job_title_for_api, "reason": message})
             except Exception as e:
                 logger.error(f"Admin: Exception processing {soc_code} - {job_title_for_api}: {e}", exc_info=True)
                 status_message.error(f"Exception for {job_title_for_api} ({soc_code}): {e}")
-                if {"soc_code": soc_code, "reason": str(e)} not in st.session_state.admin_failed_socs:
+                if {"soc_code": soc_code, "title": job_title_for_api, "reason": str(e)} not in st.session_state.admin_failed_socs:
                      st.session_state.admin_failed_socs.append({"soc_code": soc_code, "title": job_title_for_api, "reason": str(e)})
             
             processed_in_batch += 1
             st.session_state.admin_processed_count += 1
-            time.sleep(api_delay)  # Respect API delay
+            time.sleep(api_delay) 
         
-        st.session_state.admin_current_soc_index += 1 # Move to next SOC for next run
+        st.session_state.admin_current_soc_index = i + 1 
         
     if st.session_state.admin_current_soc_index >= len(target_socs):
-        st.session_state.admin_auto_run_batch = False # Stop auto-run when all done
+        st.session_state.admin_auto_run_batch = False 
         status_message.success("All SOC codes processed!")
         logger.info("Admin: All SOC codes processed.")
     
     logger.info(f"Admin: Batch iteration complete. Progress saved. Next index: {st.session_state.admin_current_soc_index}")
-    st.rerun() # Rerun to update UI after batch
+    st.rerun()
 
 # --- Main Application Tabs ---
 tabs = st.tabs(["Single Job Analysis", "Job Comparison"])
@@ -253,12 +263,8 @@ logger.info("Tabs defined for main app layout.")
 # Single Job Analysis Tab
 with tabs[0]:
     st.markdown("<h2 style='color: #0084FF;'>Analyze a Job</h2>", unsafe_allow_html=True)
-    if not bls_api_key and not database_available: # If neither API nor DB is available
-        st.error("BLS API Key not configured and database connection failed. Application functionality is severely limited. Please configure API key or check database.")
-    elif not bls_api_key:
+    if not bls_api_key:
         st.warning("BLS API Key not configured. Analysis will rely on existing database data, which may not be up-to-date for all jobs.")
-    elif not database_available:
-        st.warning("Database connection failed. Analysis will use real-time BLS API data but may be slower and historical data features will be unavailable.")
     
     st.markdown("Enter any job title to analyze")
     search_job_title = job_title_autocomplete(
@@ -269,8 +275,7 @@ with tabs[0]:
     )
     
     if st.button("🗑️ Clear Entry", key="clear_button_single_main"):
-        st.session_state.job_title_search_main = "" # Clear the text input
-        # Potentially clear other related session state if needed
+        st.session_state.job_title_search_main = "" 
         st.rerun()
     
     search_clicked = st.button("Analyze Job Risk", key="analyze_job_risk_main", type="primary")
@@ -278,7 +283,7 @@ with tabs[0]:
     if search_clicked and search_job_title:
         with st.spinner(f"Analyzing {search_job_title}..."):
             try:
-                job_data = job_api_integration.get_job_data(search_job_title) # Uses database-only version
+                job_data = job_api_integration.get_job_data(search_job_title) 
                 
                 if "error" in job_data:
                     st.error(f"Could not retrieve data for '{search_job_title}': {job_data['error']}")
@@ -286,7 +291,6 @@ with tabs[0]:
                         st.info(job_data["message"])
                     st.stop()
 
-                # Save to database if available
                 if database_available:
                     save_job_search(search_job_title, {
                         'year_1_risk': job_data.get('year_1_risk', 0),
@@ -297,7 +301,7 @@ with tabs[0]:
                 
                 st.subheader(f"AI Displacement Risk Analysis: {job_data.get('job_title', search_job_title)}")
                 
-                job_info_col, risk_gauge_col, risk_factors_col = st.columns([1.2, 1, 1.2]) # Adjusted column widths
+                job_info_col, risk_gauge_col, risk_factors_col = st.columns([1.2, 1, 1.2]) 
                 
                 with job_info_col:
                     st.markdown("<h3 style='color: #0084FF; font-size: 20px;'>Job Information</h3>", unsafe_allow_html=True)
@@ -315,7 +319,7 @@ with tabs[0]:
                     st.markdown(f"**Annual Job Openings (BLS):** {int(openings):,}" if openings else "Data unavailable")
 
                     st.markdown("<h3 style='color: #0084FF; font-size: 20px; margin-top: 20px;'>Career Outlook</h3>", unsafe_allow_html=True)
-                    automation_prob = job_data.get("automation_probability", (job_data.get("year_5_risk", 0) + job_data.get("year_1_risk",0))/2 + 10) # Example calculation
+                    automation_prob = job_data.get("automation_probability", (job_data.get("year_5_risk", 0) + job_data.get("year_1_risk",0))/2 + 10) 
                     st.markdown(f"**Task Automation Potential:** {automation_prob:.1f}% of job tasks could be impacted by automation")
                     
                     median_wage = job_data.get("wage_data", {}).get("median_wage")
@@ -568,7 +572,6 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# UptimeRobot status embed (optional, if you have a public status page)
-st.markdown("""
-<iframe src="https://stats.uptimerobot.com/L8gQВиN1X7" height="0" width="0" frameborder="0" scrolling="no" style="display:none;"></iframe>
-""", unsafe_allow_html=True)
+# Removed UptimeRobot iframe as per instructions. 
+# If a public status page link is available, it can be added here.
+# e.g., st.markdown("[View Application Status](your-status-page-url)", unsafe_allow_html=True)
