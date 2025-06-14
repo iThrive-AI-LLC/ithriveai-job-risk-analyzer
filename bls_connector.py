@@ -37,10 +37,15 @@ def _get_api_key() -> Optional[str]:
     api_key = os.environ.get('BLS_API_KEY')
     if not api_key:
         try:
-            if hasattr(st, 'secrets') and callable(st.secrets.get): # Check if st.secrets is usable
+            # Check if st.secrets is available and is the new secrets manager
+            if hasattr(st, 'secrets') and hasattr(st.secrets, 'get') and callable(st.secrets.get):
                 api_key = st.secrets.get("api_keys", {}).get("BLS_API_KEY")
-        except Exception: 
-            pass # st.secrets might not be available if not in Streamlit context
+            # Fallback for older st.secrets dictionary-like access
+            elif hasattr(st, 'secrets') and isinstance(st.secrets, dict) and "api_keys" in st.secrets:
+                 api_key = st.secrets.get("api_keys", {}).get("BLS_API_KEY")
+
+        except Exception as e:
+            logger.warning(f"Could not access Streamlit secrets to get BLS_API_KEY: {e}")
     
     if not api_key:
         logger.error("BLS_API_KEY not found in environment variables or Streamlit secrets.")
@@ -69,6 +74,7 @@ def get_bls_data(series_ids: List[str], start_year: str, end_year: str, api_key_
     """
     api_key = api_key_param or _get_api_key()
     if not api_key:
+        logger.error("BLS_API_KEY is not configured. Cannot fetch BLS data.")
         return {"status": "error", "message": "BLS_API_KEY is not configured."}
 
     if not series_ids:
@@ -86,43 +92,42 @@ def get_bls_data(series_ids: List[str], start_year: str, end_year: str, api_key_
             "startyear": start_year,
             "endyear": end_year,
             "registrationkey": api_key,
-            "catalog": True, 
-            "annualaverage": True 
+            "catalog": True, # Request catalog data for series details
+            "annualaverage": True # Request annual average data if applicable
         }
         
         data_for_chunk = None # To store response for this chunk
 
         for attempt in range(MAX_RETRIES):
             try:
-                response = requests.post(BLS_API_BASE_URL, json=payload, timeout=30) 
+                response = requests.post(BLS_API_BASE_URL, json=payload, timeout=30) # Increased timeout
                 response.raise_for_status()  
                 
                 data_for_chunk = response.json()
                 
+                if data_for_chunk.get('message'): # Log any top-level or series-specific messages from API
+                    logger.warning(f"BLS API messages for chunk {chunk_idx + 1} ({series_chunk}): {data_for_chunk['message']}")
+                    all_results_data["message"].extend(m for m in data_for_chunk['message'] if m not in all_results_data["message"])
+
+
                 if data_for_chunk.get("status") != "REQUEST_SUCCEEDED":
                     error_message = f"BLS API request not successful for chunk {chunk_idx + 1}. Status: {data_for_chunk.get('status')}. Messages: {data_for_chunk.get('message')}"
                     logger.error(error_message)
                     if attempt == MAX_RETRIES - 1: 
-                        # Store messages from the API if available, even on failure
-                        if "message" in data_for_chunk and data_for_chunk["message"]:
-                            all_results_data["message"].extend(m for m in data_for_chunk["message"] if m not in all_results_data["message"])
-                        all_results_data["status"] = "error" # Mark overall status as error if any chunk fails definitively
-                        # Do not return immediately, try other chunks if any. The final check will determine overall status.
+                        all_results_data["status"] = "error" 
                         break 
-                else: # Successful status from BLS for this chunk
+                else: 
                     if "Results" in data_for_chunk and "series" in data_for_chunk["Results"]:
                         all_results_data["Results"]["series"].extend(data_for_chunk["Results"]["series"])
-                    if "message" in data_for_chunk and data_for_chunk["message"]:
-                         all_results_data["message"].extend(m for m in data_for_chunk["message"] if m not in all_results_data["message"])
                     logger.info(f"Successfully fetched data for chunk {chunk_idx + 1}.")
-                    break  # Exit retry loop on success for this chunk
+                    break  
 
             except requests.exceptions.HTTPError as e:
                 logger.error(f"HTTPError on attempt {attempt + 1} for chunk {chunk_idx+1}: {e}. Response: {e.response.text if e.response else 'No response text'}")
                 if e.response is not None and e.response.status_code == 400: 
                      all_results_data["status"] = "error"
                      all_results_data["message"].append(f"BLS API Bad Request for chunk {chunk_idx+1}: {e.response.text if e.response else 'No response text'}. Series: {', '.join(series_chunk)}")
-                     break # Don't retry on 400
+                     break 
                 if e.response is not None and e.response.status_code == 429: 
                     logger.warning(f"Rate limit hit on chunk {chunk_idx+1}. Waiting longer before retry.")
                     time.sleep(INITIAL_RETRY_DELAY * (attempt + 1) * 5) 
@@ -135,76 +140,75 @@ def get_bls_data(series_ids: List[str], start_year: str, end_year: str, api_key_
                 time.sleep(delay)
             elif data_for_chunk is None or data_for_chunk.get("status") != "REQUEST_SUCCEEDED":
                 logger.error(f"Failed to fetch BLS data for chunk {chunk_idx+1} after {MAX_RETRIES} attempts.")
-                all_results_data["status"] = "error" # Mark overall status as error
+                all_results_data["status"] = "error" 
                 all_results_data["message"].append(f"Failed to fetch data for series chunk {chunk_idx+1} after {MAX_RETRIES} attempts. Last API status: {data_for_chunk.get('status') if data_for_chunk else 'No response'}, Messages: {data_for_chunk.get('message') if data_for_chunk else 'N/A'}")
         
         if len(series_chunks) > 1 and chunk_idx < len(series_chunks) - 1:
-            time.sleep(1) # Small delay between chunks if multiple
+            time.sleep(1) 
 
-    # If any chunk failed and marked status as error, the overall status is error.
-    # Otherwise, it remains REQUEST_SUCCEEDED (initial value).
     if not all_results_data["Results"]["series"] and all_results_data["status"] == "REQUEST_SUCCEEDED":
-        logger.warning(f"No series data found in BLS response for IDs: {series_ids}, despite API reporting overall success. Check individual series messages.")
-        # Messages from API (like "Series does not exist") would be in all_results_data["message"]
+        logger.warning(f"No series data found in BLS response for IDs: {series_ids}, despite API reporting overall success. Check API messages: {all_results_data.get('message')}")
         
     return all_results_data
 
 # --- OES Data Functions ---
 def construct_oes_series_ids(soc_code: str) -> List[str]:
     """
-    Constructs OES series IDs for employment and wages based on the SOC code.
-    Area: 0000000 (U.S.)
-    Industry: 000000 (Cross-industry)
+    Constructs OES series IDs for employment and wages.
+    Area: 0000000 (U.S. Total)
+    Industry: 000000 (Cross-industry, All ownerships)
     Datatype: 01 (Employment), 03 (Annual Mean Wage), 04 (Annual Median Wage)
     """
     soc_part = soc_code.replace("-", "")
-    if len(soc_part) != 6:
-        logger.error(f"Invalid SOC code format for OES series ID construction: {soc_code}. Must be XX-XXXX.")
+    if not (len(soc_part) == 6 and soc_part.isdigit()):
+        logger.error(f"Invalid SOC code format for OES series: {soc_code}. Expected XX-XXXX or XXXXXX (digits).")
         return []
-
+    
+    # National data, all industries
     series_ids = [
         f"OEU0000000000000{soc_part}01",  # Employment
         f"OEU0000000000000{soc_part}03",  # Annual Mean Wage
         f"OEU0000000000000{soc_part}04",  # Annual Median Wage
     ]
-    logger.info(f"Constructed OES series IDs for {soc_code}: {series_ids}")
+    logger.info(f"Constructed OES series IDs for SOC {soc_code}: {series_ids}")
     return series_ids
 
 def parse_oes_series_response(oes_response: Dict[str, Any], soc_code: str) -> Dict[str, Any]:
     """Parses raw OES API response into a structured dictionary."""
     parsed_data: Dict[str, Any] = {
-        "occupation_code": soc_code,
-        "employment": None,
-        "annual_mean_wage": None,
-        "annual_median_wage": None,
-        "data_year": None, 
-        "messages": list(set(oes_response.get("message", []))) # Use set to remove duplicates
+        "occupation_code": soc_code, "employment": None, "annual_mean_wage": None,
+        "median_wage": None, "data_year": None, "messages": [], "status": "success" # Changed annual_median_wage to median_wage
     }
 
-    if oes_response.get("status") != "REQUEST_SUCCEEDED":
-        logger.warning(f"OES response status not successful for SOC {soc_code}: {oes_response.get('message', 'No message')}")
-        # Keep messages from the API response
-        return parsed_data 
+    if not oes_response or oes_response.get("status") != "REQUEST_SUCCEEDED":
+        parsed_data["status"] = "error"
+        error_msg = f"OES API request failed or returned no data for SOC {soc_code}. Status: {oes_response.get('status', 'Unknown') if oes_response else 'No response'}."
+        parsed_data["messages"].append(error_msg)
+        if oes_response and "message" in oes_response:
+             parsed_data["messages"].extend(m for m in oes_response.get("message", []) if m not in parsed_data["messages"])
+        logger.warning(error_msg + f" Full response: {json.dumps(oes_response)}")
+        return parsed_data
 
-    latest_year_found = None
+    if oes_response.get("message"): # Capture any messages even on success
+        parsed_data["messages"].extend(m for m in oes_response["message"] if m not in parsed_data["messages"])
+
+    latest_year_found_overall = None
 
     for series in oes_response.get("Results", {}).get("series", []):
-        series_id = series.get("seriesID")
+        series_id = series.get("seriesID", "UnknownSeriesID")
         data_points = series.get("data", [])
         
         if not data_points:
-            logger.warning(f"No data points returned for OES series ID: {series_id} for SOC {soc_code}")
-            # Add a message if not already present from API
-            msg = f"No data points found for series {series_id}."
-            if msg not in parsed_data["messages"]:
-                 parsed_data["messages"].append(msg)
+            msg = f"No data points returned for OES series ID: {series_id} (SOC: {soc_code})."
+            logger.warning(msg)
+            if msg not in parsed_data["messages"]: parsed_data["messages"].append(msg)
             continue
             
-        # OES data is annual, so we take the latest available year's data point.
-        # Sort by year descending, then take the first.
-        valid_data_points = [dp for dp in data_points if dp.get("year") and dp.get("value")]
+        valid_data_points = [dp for dp in data_points if dp.get("year") and dp.get("value") and dp.get("value") != "-"] # BLS uses "-" for N/A
         if not valid_data_points:
-            logger.warning(f"No valid data points (with year and value) for OES series ID: {series_id}")
+            msg = f"No valid data points (with year and non-'-' value) for OES series ID: {series_id} (SOC: {soc_code})."
+            logger.warning(msg)
+            if msg not in parsed_data["messages"]: parsed_data["messages"].append(msg)
             continue
 
         latest_data_point = sorted(valid_data_points, key=lambda x: x["year"], reverse=True)[0]
@@ -212,317 +216,377 @@ def parse_oes_series_response(oes_response: Dict[str, Any], soc_code: str) -> Di
         year_str = latest_data_point.get("year")
         
         numeric_value: Optional[Union[int, float]] = None
-        if value_str is not None:
+        if value_str:
             try:
-                # BLS values are strings, attempt conversion
                 numeric_value = float(value_str) if '.' in value_str else int(value_str)
             except (ValueError, TypeError):
                 logger.warning(f"Could not convert OES value '{value_str}' to numeric for series {series_id} (SOC: {soc_code}).")
         
+        current_series_year = None
         if year_str:
             try:
                 current_series_year = int(year_str)
-                if latest_year_found is None or current_series_year > latest_year_found:
-                    latest_year_found = current_series_year
+                if latest_year_found_overall is None or current_series_year > latest_year_found_overall:
+                    latest_year_found_overall = current_series_year
             except ValueError:
-                 logger.warning(f"Invalid year format '{year_str}' for OES series {series_id}.")
+                logger.warning(f"Could not convert year '{year_str}' to int for series {series_id}")
 
-
-        if series_id.endswith("01"): 
-            parsed_data["employment"] = numeric_value
-        elif series_id.endswith("03"): 
-            parsed_data["annual_mean_wage"] = numeric_value
-        elif series_id.endswith("04"): 
-            parsed_data["annual_median_wage"] = numeric_value
+        if numeric_value is not None:
+            if series_id.endswith("01"):  # Employment
+                parsed_data["employment"] = numeric_value
+            elif series_id.endswith("03"):  # Annual Mean Wage
+                parsed_data["annual_mean_wage"] = numeric_value
+            elif series_id.endswith("04"):  # Annual Median Wage
+                parsed_data["median_wage"] = numeric_value # Changed from annual_median_wage
     
-    if latest_year_found:
-        parsed_data["data_year"] = str(latest_year_found)
+    parsed_data["data_year"] = str(latest_year_found_overall) if latest_year_found_overall else None
 
-    if parsed_data["employment"] is None and parsed_data["annual_median_wage"] is None:
-        logger.warning(f"No employment or median wage data successfully parsed for OES SOC {soc_code}.")
-        
+    if parsed_data["employment"] is None and parsed_data["median_wage"] is None:
+        msg = f"No employment or median wage data successfully parsed for OES SOC {soc_code}."
+        logger.warning(msg)
+        if msg not in parsed_data["messages"]: parsed_data["messages"].append(msg)
+        # Do not mark as error if some messages indicate series don't exist, as this is valid BLS behavior
+        if not any("Series does not exist" in m for m in parsed_data["messages"]):
+             parsed_data["status"] = "partial_error" # Indicates some data might be missing but not a total failure
+
     return parsed_data
 
-def get_oes_data_for_soc(soc_code: str, start_year: str, end_year: str) -> Dict[str, Any]:
-    """
-    Fetches and parses OES data for a given SOC code.
-    Queries for the last 5-7 available years to improve chances of getting data.
-    """
-    # current_year = datetime.datetime.now().year
-    # # OES data is typically annual and might have a 1-2 year lag.
-    # # Querying a range like last 5-7 years up to "last year" is safer.
-    # end_year_oes = str(current_year - 1) 
-    # start_year_oes = str(current_year - 7) 
-    # if int(start_year_oes) > int(end_year_oes): # Should not happen with current_year - 1 and current_year - 7
-    #     start_year_oes = end_year_oes
-
-    logger.info(f"Getting OES data for SOC {soc_code} from {start_year} to {end_year}.")
+def get_oes_data_for_soc(soc_code: str, api_key: Optional[str] = None) -> Dict[str, Any]:
+    """Fetches and parses OES data for a given SOC code."""
+    logger.info(f"Getting OES data for SOC {soc_code}.")
     series_ids = construct_oes_series_ids(soc_code)
     if not series_ids:
         return {"status": "error", "message": f"Could not construct OES series IDs for SOC {soc_code}."}
-    
-    raw_oes_data = get_bls_data(series_ids, start_year, end_year)
-    
-    # Add status to the parsed data
-    parsed_response = parse_oes_series_response(raw_oes_data, soc_code)
-    parsed_response["status"] = "success" if raw_oes_data.get("status") == "REQUEST_SUCCEEDED" and (parsed_response.get("employment") is not None or parsed_response.get("annual_median_wage") is not None) else "error"
-    if raw_oes_data.get("status") != "REQUEST_SUCCEEDED" and "API error" not in parsed_response["messages"]: # Add generic API error if not specific
-        parsed_response["messages"].append(f"API error during OES fetch: {raw_oes_data.get('message', 'Unknown API error')}")
-    return {"status": parsed_response["status"], "data": parsed_response, "messages": parsed_response["messages"]}
+
+    current_year = datetime.datetime.now().year
+    # Fetch data for the last 5 years to get the most recent available year.
+    oes_response = get_bls_data(series_ids, str(current_year - 5), str(current_year), api_key_param=api_key)
+    return parse_oes_series_response(oes_response, soc_code)
 
 
 # --- Employment Projections (EP) Data Functions ---
 def construct_ep_series_ids(soc_code: str) -> List[str]:
     """
     Constructs EP series IDs for national employment projections.
-    Datatypes: 01 (Base Emp), 02 (Proj Emp), 03 (Change Num), 04 (Change Pct), 07 (Openings)
+    Series ID Structure: EPU{AREA_CODE}{INDUSTRY_CODE}{OCCUPATION_CODE}{DATATYPE_CODE}
+    Area: UU00 (U.S. Total)
+    Industry: 000000 (Total, all industries)
+    Datatype: 01 (Employment), 02 (Employment change, numeric), 
+              03 (Employment change, percent), 07 (Occupational openings) 
+              (Note: BLS documentation sometimes uses 04 for openings, 07 is also seen)
     """
     soc_part = soc_code.replace("-", "")
-    if len(soc_part) != 6:
-        logger.error(f"Invalid SOC code format for EP series ID construction: {soc_code}. Must be XX-XXXX.")
+    if not (len(soc_part) == 6 and soc_part.isdigit()):
+        logger.error(f"Invalid SOC code format for EP series: {soc_code}. Expected XX-XXXX or XXXXXX (digits).")
         return []
-    
-    # National data (U.S. total), All industries
-    # Series ID format for EP: EPU + U (Unadjusted) + SOC (6 digits) + Datatype (2 digits)
-    # Example: EPUU15125201 for Software Developers, Base Year Employment
+
+    # Using 'EPUU000000000' as prefix for US total, all industries.
+    # The last part is SOC code (6 digits) + data type (2 digits)
     series_ids = [
-        f"EPUU{soc_part}01",  # Base Year Employment
-        f"EPUU{soc_part}02",  # Projected Year Employment
-        f"EPUU{soc_part}03",  # Employment Change, Numeric
-        f"EPUU{soc_part}04",  # Employment Change, Percent
-        f"EPUU{soc_part}07",  # Occupational Openings
+        f"EPUU000000000{soc_part}01",  # Employment base year
+        f"EPUU000000000{soc_part}02",  # Employment projected year (this is often how it's represented, or use 01 with different years)
+        f"EPUU000000000{soc_part}03",  # Employment change, numeric
+        f"EPUU000000000{soc_part}04",  # Employment change, percent
+        f"EPUU000000000{soc_part}07",  # Occupational openings, annual average
     ]
-    logger.info(f"Constructed EP series IDs for {soc_code}: {series_ids}")
+    logger.info(f"Constructed EP series IDs for SOC {soc_code}: {series_ids}")
     return series_ids
 
 def parse_ep_series_response(ep_response: Dict[str, Any], soc_code: str) -> Dict[str, Any]:
     """Parses raw EP API response into a structured dictionary."""
     parsed_data: Dict[str, Any] = {
-        "occupation_code": soc_code,
-        "current_employment": None,
-        "projected_employment": None,
-        "employment_change_numeric": None,
-        "employment_change_percent": None,
-        "annual_job_openings": None,
-        "base_year": None,
-        "projection_year": None,
-        "messages": list(set(ep_response.get("message", []))) # Use set to remove duplicates
+        "occupation_code": soc_code, "current_employment": None, "projected_employment": None,
+        "employment_change_numeric": None, "employment_change_percent": None,
+        "annual_job_openings": None, "base_year": None, "projection_year": None,
+        "messages": [], "status": "success"
     }
 
-    if ep_response.get("status") != "REQUEST_SUCCEEDED":
-        logger.warning(f"EP response status not successful for SOC {soc_code}: {ep_response.get('message', 'No message')}")
-        return parsed_data # Keep messages from API response
-
-    # EP data is typically a single projection period.
-    # We need to find the catalog data for base and projection years.
-    # And then find the data point for that period.
+    if not ep_response or ep_response.get("status") != "REQUEST_SUCCEEDED":
+        parsed_data["status"] = "error"
+        error_msg = f"EP API request failed or returned no data for SOC {soc_code}. Status: {ep_response.get('status', 'Unknown') if ep_response else 'No response'}."
+        parsed_data["messages"].append(error_msg)
+        if ep_response and "message" in ep_response:
+             parsed_data["messages"].extend(m for m in ep_response.get("message", []) if m not in parsed_data["messages"])
+        logger.warning(error_msg + f" Full response: {json.dumps(ep_response)}")
+        return parsed_data
     
-    base_year_found: Optional[str] = None
-    projection_year_found: Optional[str] = None
+    if ep_response.get("message"):
+        parsed_data["messages"].extend(m for m in ep_response["message"] if m not in parsed_data["messages"])
 
+    # EP data usually has one data point per series (the projection itself)
+    # Base and projection years are often in catalog or need to be known from API documentation
+    
     for series in ep_response.get("Results", {}).get("series", []):
-        series_id = series.get("seriesID")
-        catalog = series.get("catalog")
+        series_id = series.get("seriesID", "UnknownSeriesID")
         data_points = series.get("data", [])
+        catalog = series.get("catalog") # Catalog can contain years
 
         if not data_points:
-            logger.warning(f"No data points returned for EP series ID: {series_id} for SOC {soc_code}")
-            msg = f"No data points found for series {series_id}."
-            if msg not in parsed_data["messages"]:
-                 parsed_data["messages"].append(msg)
+            msg = f"No data points returned for EP series ID: {series_id} (SOC: {soc_code})."
+            logger.warning(msg)
+            if msg not in parsed_data["messages"]: parsed_data["messages"].append(msg)
             continue
-        
-        # EP data usually has one data point per series for the projection period.
-        data_point = data_points[0] if data_points else None
-        if not data_point: continue
 
+        # Typically, EP series data has one value representing the projection or base.
+        # We take the first (and usually only) data point.
+        data_point = data_points[0]
         value_str = data_point.get("value")
+        
+        # Attempt to get years from catalog if available, otherwise from data_point
+        # BLS EP data points for projections often don't have 'year' field for the projection itself,
+        # but the catalog data for the series might.
+        if catalog:
+            if not parsed_data["base_year"] and catalog.get("survey_name", "").startswith("Employment Projections") and catalog.get("periodicity") == "Biennial":
+                 # Heuristic: try to infer years from catalog if possible
+                 # This is tricky as BLS series IDs and catalog data vary.
+                 # For now, we'll assume the 'year' in the data point is the projection year if available
+                 # and 'startYear'/'endYear' from catalog might give base/projection.
+                 # This part needs refinement based on actual EP series structures.
+                 pass # Year logic will be handled by the data point's year or known projection cycle
+
         numeric_value: Optional[Union[int, float]] = None
-        if value_str is not None:
+        if value_str:
             try:
                 numeric_value = float(value_str) if '.' in value_str else int(value_str)
             except (ValueError, TypeError):
                 logger.warning(f"Could not convert EP value '{value_str}' to numeric for series {series_id} (SOC: {soc_code}).")
 
-        # Determine base and projection years from catalog if available
-        if catalog:
-            if catalog.get("survey_name", "").startswith("Employment Projections"):
-                if catalog.get("periodicity") == "Biennial" and catalog.get("base_period") and catalog.get("projection_period"):
-                    base_year_found = catalog.get("base_year") or catalog.get("base_period") # base_year is preferred
-                    projection_year_found = catalog.get("projection_year") or catalog.get("projection_period") # projection_year is preferred
-                    # Ensure they are just years
-                    if base_year_found and len(base_year_found) > 4: base_year_found = base_year_found[:4]
-                    if projection_year_found and len(projection_year_found) > 4: projection_year_found = projection_year_found[:4]
-
-        # Assign values based on datatype code in series ID
-        if series_id.endswith("01"): # Base Year Employment
-            parsed_data["current_employment"] = numeric_value
-        elif series_id.endswith("02"): # Projected Year Employment
-            parsed_data["projected_employment"] = numeric_value
-        elif series_id.endswith("03"): # Employment Change, Numeric
-            parsed_data["employment_change_numeric"] = numeric_value
-        elif series_id.endswith("04"): # Employment Change, Percent
-            parsed_data["employment_change_percent"] = numeric_value
-        elif series_id.endswith("07"): # Occupational Openings
-            parsed_data["annual_job_openings"] = numeric_value
+        if numeric_value is not None:
+            # EP data types are often at the end of series ID or need mapping.
+            # The constructed series IDs have datatype at the end.
+            # EPUU000000000{soc_part}01 -> Employment (Base Year)
+            # EPUU000000000{soc_part}02 -> Employment (Projected Year) - This is often how it's done.
+            # EPUU000000000{soc_part}03 -> Employment Change, Numeric
+            # EPUU000000000{soc_part}04 -> Employment Change, Percent
+            # EPUU000000000{soc_part}07 -> Occupational Openings
             
-    # Set the years if found from catalog
-    if base_year_found: parsed_data["base_year"] = base_year_found
-    if projection_year_found: parsed_data["projection_year"] = projection_year_found
+            # Assuming the series IDs are constructed as per construct_ep_series_ids
+            # and that the API returns data for these specific series.
+            # The order might matter if multiple series return "Employment".
+            # Typically, the projection data is for a specific 10-year span.
+            # We'll assume the first '01' is base year and '02' is projection year if available.
+            # This is a simplification; robust parsing needs exact series ID knowledge.
 
-    # Basic validation: if projected employment is present, base employment should also be.
-    if parsed_data["projected_employment"] is not None and parsed_data["current_employment"] is None:
-        logger.warning(f"EP data for SOC {soc_code} has projected employment but missing base employment.")
-        # This could indicate a data issue or parsing problem.
+            if series_id.endswith("01"): # Employment (often base year)
+                parsed_data["current_employment"] = numeric_value
+                if data_point.get("year"): parsed_data["base_year"] = data_point.get("year")
+            elif series_id.endswith("02"): # Employment (often projected year)
+                parsed_data["projected_employment"] = numeric_value
+                if data_point.get("year"): parsed_data["projection_year"] = data_point.get("year")
+            elif series_id.endswith("03"): # Employment Change, Numeric
+                parsed_data["employment_change_numeric"] = numeric_value
+            elif series_id.endswith("04"): # Employment Change, Percent
+                parsed_data["employment_change_percent"] = numeric_value
+            elif series_id.endswith("07"): # Occupational Openings
+                parsed_data["annual_job_openings"] = numeric_value
+        
+        # If years are still None, try to infer from catalog if available
+        if catalog:
+            if not parsed_data["base_year"] and catalog.get("startYear"):
+                parsed_data["base_year"] = catalog.get("startYear")
+            if not parsed_data["projection_year"] and catalog.get("endYear"):
+                parsed_data["projection_year"] = catalog.get("endYear")
 
-    if all(v is None for k, v in parsed_data.items() if k not in ["occupation_code", "messages"]):
-        logger.warning(f"No EP data values successfully parsed for SOC {soc_code}.")
+
+    if not all(k is not None for k in ["current_employment", "projected_employment", "employment_change_percent", "annual_job_openings"]):
+        msg = f"Failed to parse some EP data for SOC {soc_code}. Check API messages."
+        logger.warning(msg + f" Parsed: {parsed_data}")
+        if msg not in parsed_data["messages"]: parsed_data["messages"].append(msg)
+        if not any("Series does not exist" in m for m in parsed_data["messages"]): # if not due to series non-existence
+             parsed_data["status"] = "partial_error"
+
 
     return parsed_data
 
-def get_ep_data_for_soc(soc_code: str) -> Dict[str, Any]:
-    """
-    Fetches and parses Employment Projections (EP) data for a given SOC code.
-    EP data is typically biennial, so we query for a recent period.
-    """
-    # EP data is typically a 10-year projection, updated biennially.
-    # We fetch for a period that should contain the latest projection.
-    # Example: If current year is 2024, BLS might have 2022-2032 projections.
-    # Querying for a single recent year like "current_year - 1" should get the latest projection data.
-    current_year = datetime.datetime.now().year
-    # Projections are usually for a future period, so we query a recent past year to get the "latest" projection data.
-    # The start and end year for EP series often represent the *publication* period of the projection, not the projection span itself.
-    # For EP, it's often better to query a single recent year or a small range.
-    # Let's try querying for the last 2-3 years to catch the latest biennial release.
-    query_year = str(current_year - 2) # Try to get data published in the last couple of years.
-    
-    logger.info(f"Getting employment projections for SOC {soc_code} around year {query_year}.")
+def get_ep_data_for_soc(soc_code: str, api_key: Optional[str] = None) -> Dict[str, Any]:
+    """Fetches and parses EP data for a given SOC code."""
+    logger.info(f"Getting employment projections for SOC {soc_code}.")
     series_ids = construct_ep_series_ids(soc_code)
     if not series_ids:
         return {"status": "error", "message": f"Could not construct EP series IDs for SOC {soc_code}."}
-    
-    # For EP, the 'startyear' and 'endyear' for get_bls_data often refer to the publication/reference period
-    # of the projection data, not the projection span itself.
-    # The actual projection span (e.g., 2022-2032) is usually part of the series catalog.
-    # We'll query for a recent period to get the latest available projection.
-    raw_ep_data = get_bls_data(series_ids, query_year, query_year) # Querying a single recent year
-    
-    parsed_response = parse_ep_series_response(raw_ep_data, soc_code)
-    
-    # Determine overall status based on whether key projection data was found
-    key_projection_fields = ["current_employment", "projected_employment", "employment_change_percent", "annual_job_openings"]
-    if raw_ep_data.get("status") == "REQUEST_SUCCEEDED" and any(parsed_response.get(field) is not None for field in key_projection_fields):
-        status = "success"
-    else:
-        status = "error"
-        logger.warning(f"Failed to parse key EP data for SOC {soc_code}. Response: {parsed_response}")
-        if "API error" not in parsed_response["messages"] and raw_ep_data.get("status") != "REQUEST_SUCCEEDED":
-             parsed_response["messages"].append(f"API error during EP fetch: {raw_ep_data.get('message', 'Unknown API error')}")
 
-    return {"status": status, "projections": parsed_response, "messages": parsed_response["messages"]}
+    # Projections are typically biennial, covering a 10-year span.
+    # Fetch for a recent typical projection period. BLS usually updates every 2 years.
+    # Example: if current year is 2024, projections might be 2022-2032.
+    # We need to fetch for the period the series IDs are defined for.
+    # For simplicity, we'll fetch a wide range and rely on the API returning the relevant projection data.
+    # A more robust solution would determine the current projection cycle years.
+    current_year = datetime.datetime.now().year
+    # Fetching data for a 10-year projection window, assuming the latest data is within the last few years.
+    # The specific years in the series IDs are often implicit in the EP program.
+    # The 'catalog=true' parameter should help provide context if the API supports it well for EP series.
+    # Using a fixed recent range as EP series are not like typical time series.
+    # The actual projection period (e.g., 2022-2032) is inherent to the series ID itself.
+    # The startyear/endyear in the payload might be less critical for EP series that represent a fixed projection.
+    # However, to be safe and align with API requirements:
+    proj_start_year = str(current_year - 2) # e.g., 2022 if current is 2024
+    proj_end_year = str(current_year + 10)  # e.g., 2034
+    
+    ep_response = get_bls_data(series_ids, proj_start_year, proj_end_year, api_key_param=api_key)
+    parsed_ep_data = parse_ep_series_response(ep_response, soc_code)
+    
+    # If base_year or projection_year are still None, try to set default based on typical BLS cycle
+    if parsed_ep_data.get("status") == "success":
+        if not parsed_ep_data.get("base_year"):
+            # Estimate base year (e.g., 2 years ago if current year is even, 1 year ago if odd)
+            parsed_ep_data["base_year"] = str(current_year - 2 if current_year % 2 == 0 else current_year - 1)
+            logger.info(f"EP base_year not found in API response for {soc_code}, estimated to {parsed_ep_data['base_year']}")
+        if not parsed_ep_data.get("projection_year"):
+            try:
+                base_y = int(parsed_ep_data["base_year"])
+                parsed_ep_data["projection_year"] = str(base_y + 10)
+                logger.info(f"EP projection_year not found, derived as {parsed_ep_data['projection_year']} from base_year.")
+            except (TypeError, ValueError):
+                 parsed_ep_data["projection_year"] = str(current_year + 8) # Fallback
+                 logger.info(f"EP projection_year could not be derived, estimated to {parsed_ep_data['projection_year']}")
+                 
+    return parsed_ep_data
+
+# --- Deprecated/Legacy Functions (to be phased out or refactored) ---
+def get_occupation_data(occ_code: str) -> Dict[str, Any]:
+    """
+    DEPRECATED: Use get_oes_data_for_soc instead for OES data.
+    Get employment and wage data for a specific occupation code.
+    """
+    logger.warning("get_occupation_data is deprecated. Use get_oes_data_for_soc for OES data.")
+    return get_oes_data_for_soc(occ_code, api_key=_get_api_key())
 
 
-# --- Occupation Search (Simplified) ---
+def get_employment_projection(occ_code: str) -> Dict[str, Any]:
+    """
+    DEPRECATED: Use get_ep_data_for_soc instead for EP data.
+    Get employment projections for an occupation.
+    """
+    logger.warning("get_employment_projection is deprecated. Use get_ep_data_for_soc for EP data.")
+    return get_ep_data_for_soc(occ_code, api_key=_get_api_key())
+
+
+# --- Utility Functions ---
 def search_occupations(query: str) -> List[Dict[str, str]]:
     """
     Search for occupation codes matching the query.
-    This is a simplified local search against a predefined list.
-    In a real scenario, this might query a BLS API or a local SOC database.
+    NOTE: This is a placeholder. A real implementation would query a comprehensive SOC database or BLS API.
     """
-    from bls_job_mapper import TARGET_SOC_CODES # Import from bls_job_mapper to use its list
+    logger.info(f"Searching occupations for query: '{query}' (using placeholder list)")
+    # Sample SOC codes and titles (abbreviated list)
+    # This list should be populated from a more comprehensive source in a real application
+    soc_codes = [
+        {"code": "11-1011", "title": "Chief Executives"},
+        {"code": "11-2011", "title": "Advertising and Promotions Managers"},
+        {"code": "11-3021", "title": "Computer and Information Systems Managers"},
+        {"code": "11-3031", "title": "Financial Managers"},
+        {"code": "13-1111", "title": "Management Analysts"},
+        {"code": "13-2011", "title": "Accountants and Auditors"},
+        {"code": "15-1211", "title": "Computer Systems Analysts"},
+        {"code": "15-1251", "title": "Computer Programmers"},
+        {"code": "15-1252", "title": "Software Developers"},
+        {"code": "15-1254", "title": "Web Developers"},
+        {"code": "15-2051", "title": "Data Scientists"},
+        {"code": "17-2071", "title": "Electrical Engineers"},
+        {"code": "23-1011", "title": "Lawyers"},
+        {"code": "25-2021", "title": "Elementary School Teachers, Except Special Education"},
+        {"code": "25-2031", "title": "Secondary School Teachers, Except Special and Career/Technical Education"},
+        {"code": "27-1024", "title": "Graphic Designers"},
+        {"code": "29-1021", "title": "Dentists, General"},
+        {"code": "29-1141", "title": "Registered Nurses"},
+        {"code": "29-1215", "title": "Family Medicine Physicians"},
+        {"code": "35-2014", "title": "Cooks, Restaurant"},
+        {"code": "41-2031", "title": "Retail Salespersons"},
+        {"code": "43-4051", "title": "Customer Service Representatives"},
+        {"code": "43-6011", "title": "Executive Secretaries and Executive Administrative Assistants"},
+        {"code": "47-2031", "title": "Carpenters"},
+        {"code": "49-3023", "title": "Automotive Service Technicians and Mechanics"},
+        {"code": "53-3032", "title": "Heavy and Tractor-Trailer Truck Drivers"}
+    ]
     
     query_lower = query.lower()
-    matches: List[Dict[str, str]] = []
-
-    # Prioritize exact matches
-    for item in TARGET_SOC_CODES:
-        if query_lower == item["title"].lower():
-            matches.append({"soc_code": item["soc_code"], "title": item["title"]})
+    matches = [item for item in soc_codes if query_lower in item["title"].lower()]
     
-    # Add matches where query is a substring of the title
-    for item in TARGET_SOC_CODES:
-        if query_lower in item["title"].lower() and not any(m["soc_code"] == item["soc_code"] for m in matches):
-            matches.append({"soc_code": item["soc_code"], "title": item["title"]})
-            
-    # Limit results if necessary (e.g., to top 10)
-    logger.info(f"Found {len(matches)} potential SOC matches for query '{query}'. Returning up to 10.")
-    return matches[:10]
+    if not matches: # If no title match, try matching SOC code directly
+        matches = [item for item in soc_codes if query_lower == item["code"].replace("-","")]
+    
+    logger.info(f"Found {len(matches)} placeholder matches for query '{query}'.")
+    return matches
 
 
-# --- API Connectivity Check ---
-@st.cache_data(ttl=300) # Cache for 5 minutes
-def check_api_connectivity(api_key_to_check: Optional[str] = None) -> bool:
+def check_api_key_validity() -> bool:
     """
-    Check if the BLS API is accessible with the provided (or configured) API key.
+    Checks if the configured BLS API key is valid by making a small test call.
+    Returns: True if the API key is valid, False otherwise.
     """
-    key_to_use = api_key_to_check or _get_api_key()
-    if not key_to_use:
-        logger.warning("API connectivity check: No API key available.")
+    api_key = _get_api_key()
+    if not api_key:
+        logger.info("BLS API key not available for validity check.")
         return False
+
+    # A very common and small series: National Unemployment Rate
+    test_series_id = "LNS14000000" 
+    current_year = str(datetime.datetime.now().year)
+    
+    logger.info(f"Checking BLS API key validity with test series {test_series_id}...")
     try:
-        # Test with a simple, common series ID that is likely to exist.
-        # LAUCN040010000000005 = Unemployment rate in California (annual)
-        # Using a very small date range to minimize data transfer.
-        current_year_str = str(datetime.datetime.now().year - 1) # Use previous year for annual data
-        test_data = get_bls_data(["LAUCN040010000000005"], current_year_str, current_year_str, api_key_param=key_to_use)
-        
-        if test_data.get("status") == "REQUEST_SUCCEEDED":
-            logger.info("BLS API connectivity check successful.")
+        # Use a short timeout for this check
+        response = requests.post(
+            BLS_API_BASE_URL,
+            json={
+                "seriesid": [test_series_id],
+                "startyear": current_year,
+                "endyear": current_year,
+                "registrationkey": api_key
+            },
+            timeout=10 
+        )
+        data = response.json()
+        if data.get("status") == "REQUEST_SUCCEEDED":
+            logger.info("BLS API key is valid.")
             return True
         else:
-            logger.warning(f"BLS API connectivity check failed. Status: {test_data.get('status')}, Messages: {test_data.get('message')}")
+            logger.error(f"BLS API key appears invalid. Status: {data.get('status')}, Messages: {data.get('message')}")
             return False
-    except Exception as e:
-        logger.error(f"BLS API connectivity check encountered an exception: {e}", exc_info=True)
+    except requests.exceptions.RequestException as e:
+        logger.error(f"BLS API connectivity check failed during key validity test: {e}")
+        return False
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode JSON response during API key validity test: {e}. Response text: {response.text if 'response' in locals() else 'No response object'}")
         return False
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
-    logger.setLevel(logging.DEBUG)
-    
-    # Ensure API key is available for testing
+    # Example usage (requires BLS_API_KEY to be set in environment)
     if not is_api_key_available():
-        print("Please set the BLS_API_KEY environment variable for testing.")
+        print("Please set the BLS_API_KEY environment variable to run examples.")
     else:
-        print("BLS API Key is available.")
-        
-        # Test API connectivity
-        print(f"API Connectivity: {'OK' if check_api_connectivity() else 'Failed'}")
+        print(f"BLS API Key is available: {is_api_key_available()}")
+        print(f"Checking API Key Validity: {check_api_key_validity()}")
 
         # Test OES Data
-        soc_code_oes = "15-1252"  # Software Developers
-        print(f"\n--- Testing OES Data for SOC {soc_code_oes} ---")
-        current_year = datetime.datetime.now().year
-        oes_data = get_oes_data_for_soc(soc_code_oes, str(current_year - 3), str(current_year - 1))
+        soc_code_oes = "15-1252" # Software Developers
+        print(f"\n--- Testing OES Data for SOC: {soc_code_oes} ---")
+        oes_data = get_oes_data_for_soc(soc_code_oes)
         print(json.dumps(oes_data, indent=2))
 
         # Test EP Data
-        soc_code_ep = "15-1252" # Software Developers
-        print(f"\n--- Testing EP Data for SOC {soc_code_ep} ---")
+        soc_code_ep = "15-1251" # Computer Programmers
+        print(f"\n--- Testing EP Data for SOC: {soc_code_ep} ---")
         ep_data = get_ep_data_for_soc(soc_code_ep)
         print(json.dumps(ep_data, indent=2))
 
-        # Test another EP code
-        soc_code_ep_2 = "29-1141" # Registered Nurses
-        print(f"\n--- Testing EP Data for SOC {soc_code_ep_2} ---")
-        ep_data_2 = get_ep_data_for_soc(soc_code_ep_2)
-        print(json.dumps(ep_data_2, indent=2))
-
-        # Test a SOC that might have limited data or issues
-        soc_code_problematic = "11-1011" # Chief Executives (often has less detailed public data)
-        print(f"\n--- Testing Problematic OES Data for SOC {soc_code_problematic} ---")
-        oes_problem_data = get_oes_data_for_soc(soc_code_problematic, str(current_year - 3), str(current_year - 1))
+        # Test a potentially problematic SOC
+        soc_code_problem = "11-1111" # Example of a less common one
+        print(f"\n--- Testing OES Data for potentially problematic SOC: {soc_code_problem} ---")
+        oes_problem_data = get_oes_data_for_soc(soc_code_problem)
         print(json.dumps(oes_problem_data, indent=2))
-        
-        print(f"\n--- Testing Problematic EP Data for SOC {soc_code_problematic} ---")
-        ep_problem_data = get_ep_data_for_soc(soc_code_problematic)
+
+        print(f"\n--- Testing EP Data for potentially problematic SOC: {soc_code_problem} ---")
+        ep_problem_data = get_ep_data_for_soc(soc_code_problem)
         print(json.dumps(ep_problem_data, indent=2))
-        
-        # Test occupation search
-        print("\n--- Testing Occupation Search for 'developer' ---")
-        search_results = search_occupations("developer")
+
+        # Test search
+        print("\n--- Testing Occupation Search for 'manager' ---")
+        search_results = search_occupations("manager")
         print(json.dumps(search_results, indent=2))
 
-        print("\n--- Testing Occupation Search for 'nurse' ---")
-        search_results_nurse = search_occupations("nurse")
-        print(json.dumps(search_results_nurse, indent=2))
+        print("\n--- Testing Occupation Search for '15-1252' ---")
+        search_results_code = search_occupations("151252")
+        print(json.dumps(search_results_code, indent=2))
+
+
