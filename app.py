@@ -1,5 +1,4 @@
 import streamlit as st
-import bls_job_mapper
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
@@ -127,7 +126,7 @@ try:
     import simple_comparison
     import ai_job_displacement
     import career_navigator
-    import bls_job_mapper # Added this import
+    import bls_job_mapper # Ensure this is imported
     from job_title_autocomplete_v2 import job_title_autocomplete
     import database
     # simplified_admin module's functionality will be integrated directly or called if its functions are self-contained
@@ -617,6 +616,10 @@ if database_available: # Only show admin controls if DB is connected
         if st.session_state.get("run_batch_population", False) and bls_api_key:
             if st.session_state.current_soc_index < total_socs:
                 
+                # Ensure TARGET_SOC_CODES is available in session_state if needed, or access directly
+                if 'target_soc_codes' not in st.session_state: # Initialize if not present
+                    st.session_state.target_soc_codes = TARGET_SOC_CODES
+
                 soc_to_process_this_iteration = st.session_state.target_soc_codes[st.session_state.current_soc_index]
                 soc_code = soc_to_process_this_iteration["soc_code"]
                 representative_title = soc_to_process_this_iteration["title"]
@@ -624,11 +627,14 @@ if database_available: # Only show admin controls if DB is connected
                 log_entry = f"Processing SOC: {soc_code} (Rep. Title: '{representative_title}')"
                 st.session_state.admin_log.append(log_entry)
                 logger.info(f"Admin tool: {log_entry}")
+
+                # Add the new logging lines here
+                logger.info(f"Admin Tool: Attempting to call bls_job_mapper.get_complete_job_data for SOC: {soc_code} with title: '{representative_title}'")
+                logger.info(f"Admin Tool: Type of bls_job_mapper: {type(bls_job_mapper)}")
+                logger.info(f"Admin Tool: Attributes of bls_job_mapper: {dir(bls_job_mapper)}")
                 
                 try:
-                    # Call the main data fetching and processing function from bls_job_mapper
-                    # This function now handles DB saving internally.
-                    job_data = bls_job_mapper.get_complete_job_data(representative_title) # Use representative title for initial lookup
+                    job_data = bls_job_mapper.get_complete_job_data(representative_title) 
                     
                     if "error" in job_data or job_data.get("source") == "error_soc_mapping" or job_data.get("source") == "error_bls_api_fetch" or job_data.get("source") == "bls_api_fetch_error_or_db_save_failed":
                         err_msg = job_data.get('error', 'Unknown error during processing.')
@@ -640,27 +646,24 @@ if database_available: # Only show admin controls if DB is connected
                         log_entry = f"SUCCESS: Data fetched/updated for SOC {soc_code} ('{job_data.get('job_title', representative_title)}'). Source: {job_data.get('source', 'N/A')}"
                         st.session_state.admin_log.append(log_entry)
                         logger.info(f"Admin tool: {log_entry}")
-                        # Remove from failed list if it was there previously and now succeeded
                         if soc_code in st.session_state.failed_soc_populations:
                             del st.session_state.failed_soc_populations[soc_code]
                             
                 except AttributeError as ae:
-                    # This catches if bls_job_mapper.get_complete_job_data is not found (e.g. due to import error in bls_job_mapper itself)
                     log_entry = f"CRITICAL_ERROR for SOC {soc_code}: The function bls_job_mapper.get_complete_job_data is not available. Details: {ae}"
                     st.session_state.admin_log.append(log_entry)
                     logger.critical(f"Admin tool: {log_entry}", exc_info=True)
                     st.session_state.failed_soc_populations[soc_code] = f"AttributeError: {ae}"
-                    st.session_state.run_batch_population = False # Stop batch on critical module error
+                    st.session_state.run_batch_population = False 
                 except Exception as e:
                     log_entry = f"UNEXPECTED_ERROR for SOC {soc_code}: {str(e)}"
                     st.session_state.admin_log.append(log_entry)
                     logger.error(f"Admin tool: {log_entry}", exc_info=True)
                     st.session_state.failed_soc_populations[soc_code] = str(e)
-                    st.session_state.run_batch_population = False # Stop batch on major unexpected error
+                    st.session_state.run_batch_population = False 
 
                 st.session_state.current_soc_index += 1
                 
-                # Save progress after each SOC
                 try:
                     with open(progress_file, "w") as f:
                         json.dump({
@@ -671,20 +674,16 @@ if database_available: # Only show admin controls if DB is connected
                     st.session_state.admin_log.append(f"--- Error saving progress after SOC {soc_code}: {e_save} ---")
                     logger.error(f"Admin tool: Error saving progress file: {e_save}")
 
-                # Check if batch size reached or end of list
                 if (st.session_state.current_soc_index % batch_size == 0) or (st.session_state.current_soc_index >= total_socs):
                     st.session_state.admin_log.append(f"--- Batch of {batch_size} (or end of list) reached. Pausing if auto-run not continuous. ---")
-                    # If you want continuous auto-run, remove this line:
-                    # st.session_state.run_batch_population = False # Pause after one batch
                     if st.session_state.current_soc_index >= total_socs:
                          st.session_state.admin_log.append("--- All target SOCs processed. Batch complete. ---")
-                         st.session_state.run_batch_population = False # Stop when all done
-                    st.rerun() # Rerun to update UI and continue if still run_batch_population
+                         st.session_state.run_batch_population = False 
+                    st.rerun() 
                 else:
-                    # Delay before next API call in the same batch run
                     time.sleep(api_delay)
-                    st.rerun() # Rerun to process next item in batch
-            else: # current_soc_index >= total_socs
+                    st.rerun() 
+            else: 
                 st.session_state.admin_log.append("--- All target SOCs have been processed. ---")
                 st.session_state.run_batch_population = False
                 st.success("Database population complete for all target SOCs!")
