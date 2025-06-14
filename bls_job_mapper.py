@@ -425,19 +425,55 @@ def fetch_and_process_soc_data(soc_code: str, representative_job_title: str, eng
         logger.error(err_msg)
         return False, err_msg
 
+def _get_safe_year_range(raw_base_year: Optional[str], raw_proj_year: Optional[str], 
+                         default_start_year_str: str = '2023', 
+                         default_proj_period: int = 10,
+                         soc_code_for_logging: Optional[str] = "N/A") -> Tuple[int, int]:
+    """Safely determines start and end years for trends, with defaults and logging."""
+    start_year_int: int
+    end_year_int: int
+
+    # Determine start_year
+    if raw_base_year and isinstance(raw_base_year, str) and raw_base_year.isdigit():
+        start_year_int = int(raw_base_year)
+    else:
+        logger.warning(f"Invalid or missing 'ep_base_year' ('{raw_base_year}') for SOC {soc_code_for_logging}. Defaulting to {default_start_year_str}.")
+        start_year_int = int(default_start_year_str)
+
+    # Determine end_year
+    if raw_proj_year and isinstance(raw_proj_year, str) and raw_proj_year.isdigit():
+        end_year_int = int(raw_proj_year)
+    else:
+        logger.warning(f"Invalid or missing 'ep_proj_year' ('{raw_proj_year}') for SOC {soc_code_for_logging}. Defaulting to {start_year_int + default_proj_period}.")
+        end_year_int = start_year_int + default_proj_period
+    
+    # Ensure end_year is after start_year
+    if end_year_int <= start_year_int:
+        logger.warning(f"'ep_proj_year' ({end_year_int}) is not after 'ep_base_year' ({start_year_int}) for SOC {soc_code_for_logging}. Adjusting to {start_year_int + default_proj_period}.")
+        end_year_int = start_year_int + default_proj_period
+        
+    return start_year_int, end_year_int
+
 def format_database_row_to_app_schema(db_row: Dict[str, Any], original_job_title_query: str) -> Dict[str, Any]:
     """Formats a database row into the application's expected schema."""
-    job_category = db_row.get('job_category', get_job_category_from_soc(db_row.get('occupation_code')))
-    risk_data = calculate_ai_risk_from_category(job_category, db_row.get('occupation_code'))
+    soc_code = db_row.get('occupation_code')
+    job_category = db_row.get('job_category', get_job_category_from_soc(soc_code))
+    risk_data = calculate_ai_risk_from_category(job_category, soc_code)
     
-    trend_years = list(range(int(db_row.get('ep_base_year', '2022')), int(db_row.get('ep_proj_year', '2032')) + 1))
+    start_year, end_year = _get_safe_year_range(
+        db_row.get('ep_base_year'), 
+        db_row.get('ep_proj_year'),
+        soc_code_for_logging=soc_code
+    )
+    trend_years = list(range(start_year, end_year + 1))
+    
     current_emp = db_row.get('current_employment')
     projected_emp = db_row.get('projected_employment')
-    trend_employment = generate_employment_trend(current_emp, projected_emp, len(trend_years)) if current_emp and projected_emp else []
+    trend_employment = generate_employment_trend(current_emp, projected_emp, len(trend_years)) if current_emp is not None and projected_emp is not None else [None] * len(trend_years)
 
     return {
         "job_title": db_row.get('standardized_title', original_job_title_query),
-        "occupation_code": db_row.get('occupation_code'),
+        "occupation_code": soc_code,
         "source": "bls_database_cache",
         "job_category": job_category,
         "projections": {
@@ -463,17 +499,24 @@ def format_database_row_to_app_schema(db_row: Dict[str, Any], original_job_title
 
 def format_api_processed_data_to_app_schema(api_data: Dict[str, Any]) -> Dict[str, Any]:
     """Formats data freshly processed from API into the application's expected schema."""
-    job_category = api_data.get('job_category', get_job_category_from_soc(api_data.get('occupation_code')))
-    risk_data = calculate_ai_risk_from_category(job_category, api_data.get('occupation_code'))
+    soc_code = api_data.get('occupation_code')
+    job_category = api_data.get('job_category', get_job_category_from_soc(soc_code))
+    risk_data = calculate_ai_risk_from_category(job_category, soc_code)
 
-    trend_years = list(range(int(api_data.get('ep_base_year', '2022')), int(api_data.get('ep_proj_year', '2032')) + 1))
+    start_year, end_year = _get_safe_year_range(
+        api_data.get('ep_base_year'), 
+        api_data.get('ep_proj_year'),
+        soc_code_for_logging=soc_code
+    )
+    trend_years = list(range(start_year, end_year + 1))
+    
     current_emp = api_data.get('current_employment')
     projected_emp = api_data.get('projected_employment')
-    trend_employment = generate_employment_trend(current_emp, projected_emp, len(trend_years)) if current_emp and projected_emp else []
+    trend_employment = generate_employment_trend(current_emp, projected_emp, len(trend_years)) if current_emp is not None and projected_emp is not None else [None] * len(trend_years)
     
     return {
         "job_title": api_data.get('standardized_title', api_data.get('job_title')),
-        "occupation_code": api_data.get('occupation_code'),
+        "occupation_code": soc_code,
         "source": "bls_api_live",
         "job_category": job_category,
         "projections": {
