@@ -29,13 +29,13 @@ except ImportError:
     class bls_connector_stub: # type: ignore
         @staticmethod
         def get_bls_data(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-            return {"status": "error", "message": "bls_connector module not found."}
+            return {"status": "error", "message": ["bls_connector module not found."]}
         @staticmethod
         def get_oes_data_for_soc(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-            return {"status": "error", "message": "bls_connector module not found."}
+            return {"status": "error", "message": ["bls_connector module not found."]}
         @staticmethod
         def get_ep_data_for_soc(*args: Any, **kwargs: Any) -> Dict[str, Any]:
-            return {"status": "error", "message": "bls_connector module not found."}
+            return {"status": "error", "message": ["bls_connector module not found."]}
         @staticmethod
         def search_occupations(*args: Any, **kwargs: Any) -> List[Dict[str, str]]:
             return []
@@ -162,6 +162,31 @@ SOC_TO_CATEGORY: Dict[str, str] = {
     "51-": "Production Occupations", "53-": "Transportation and Material Moving Occupations",
     "00-0000": "Unknown or Unclassified" # For fallback
 }
+
+TARGET_SOC_CODES: List[Dict[str, str]] = [
+    {"soc_code": "15-1252", "title": "Software Developers"}, {"soc_code": "15-1251", "title": "Computer Programmers"},
+    {"soc_code": "15-1254", "title": "Web Developers"}, {"soc_code": "15-2051", "title": "Data Scientists"},
+    {"soc_code": "15-1211", "title": "Computer Systems Analysts"}, {"soc_code": "15-1244", "title": "Network and Computer Systems Administrators"},
+    {"soc_code": "15-1232", "title": "Computer User Support Specialists"}, {"soc_code": "15-1299", "title": "Computer Occupations, All Other"},
+    {"soc_code": "13-2011", "title": "Accountants and Auditors"}, {"soc_code": "13-2051", "title": "Financial Analysts"},
+    {"soc_code": "13-1111", "title": "Management Analysts"}, {"soc_code": "13-1161", "title": "Market Research Analysts and Marketing Specialists"},
+    {"soc_code": "11-1021", "title": "General and Operations Managers"}, {"soc_code": "11-2021", "title": "Marketing Managers"},
+    {"soc_code": "11-3021", "title": "Computer and Information Systems Managers"}, {"soc_code": "11-9199", "title": "Managers, All Other"},
+    {"soc_code": "29-1141", "title": "Registered Nurses"}, {"soc_code": "29-1229", "title": "Physicians, All Other"},
+    {"soc_code": "29-1021", "title": "Dentists, General"}, {"soc_code": "29-2061", "title": "Licensed Practical and Licensed Vocational Nurses"},
+    {"soc_code": "25-2021", "title": "Elementary School Teachers, Except Special Education"}, {"soc_code": "25-2031", "title": "Secondary School Teachers, Except Special and Career/Technical Education"},
+    {"soc_code": "25-3099", "title": "Teachers and Instructors, All Other"},
+    {"soc_code": "43-4051", "title": "Customer Service Representatives"}, {"soc_code": "43-6011", "title": "Executive Secretaries and Executive Administrative Assistants"},
+    {"soc_code": "43-9061", "title": "Office Clerks, General"}, {"soc_code": "43-9021", "title": "Data Entry Keyers"},
+    {"soc_code": "41-2031", "title": "Retail Salespersons"}, {"soc_code": "41-1011", "title": "First-Line Supervisors of Retail Sales Workers"},
+    {"soc_code": "53-3032", "title": "Heavy and Tractor-Trailer Truck Drivers"}, {"soc_code": "53-3033", "title": "Light Truck Drivers"},
+    {"soc_code": "47-2061", "title": "Construction Laborers"}, {"soc_code": "47-2111", "title": "Electricians"},
+    {"soc_code": "47-2031", "title": "Carpenters"},
+    {"soc_code": "35-2014", "title": "Cooks, Restaurant"}, {"soc_code": "35-3031", "title": "Waiters and Waitresses"},
+    {"soc_code": "23-1011", "title": "Lawyers"}, {"soc_code": "23-2011", "title": "Paralegals and Legal Assistants"},
+    {"soc_code": "27-1024", "title": "Graphic Designers"}, {"soc_code": "27-3042", "title": "Technical Writers"},
+    {"soc_code": "27-3023", "title": "News Analysts, Reporters, and Journalists"}
+]
 
 def standardize_job_title(title: str) -> str:
     """Standardize job title format for consistent mapping."""
@@ -377,204 +402,131 @@ def fetch_and_process_soc_data(soc_code: str, original_job_title: str, standardi
     """Fetches OES and EP data for a SOC, processes it, and prepares for DB storage."""
     current_time = datetime.datetime.now(datetime.timezone.utc)
     last_api_fetch_str = current_time.strftime('%Y-%m-%d')
+    current_year = current_time.year # Define current_year
 
-    logger.info(f"Fetching OES data for SOC {soc_code} for years 2022-2024") # BLS typically has a lag
-    oes_data_raw = bls_connector.get_oes_data_for_soc(soc_code, start_year="2022", end_year="2024")
-    if oes_data_raw is None: # Handle case where connector might return None on severe error
-        oes_data_raw = {"status": "error", "message": ["OES connector returned None."]}
-    oes_data = parse_oes_series_response(oes_data_raw, soc_code)
-    
-    if oes_data['status'] == 'error':
-        logger.warning(f"Failed to fetch or parse OES data for SOC {soc_code}. API Response: {json.dumps(oes_data_raw)}")
-
-    logger.info(f"Fetching EP data for SOC {soc_code}")
-    ep_data_raw = bls_connector.get_ep_data_for_soc(soc_code)
-    if ep_data_raw is None: # Handle case where connector might return None
-        ep_data_raw = {"status": "error", "message": ["EP connector returned None."]}
-    ep_data = parse_ep_series_response(ep_data_raw, soc_code)
-
-    if ep_data['status'] == 'error':
-        logger.warning(f"Failed to fetch or parse EP data for SOC {soc_code}. API Response: {json.dumps(ep_data_raw)}")
-
-    # Prepare data for database insertion/update
-    # Ensure all fields match the table definition, defaulting to None if data is missing
-    processed_data = {
+    # Initialize data structure with defaults
+    processed_data: Dict[str, Any] = {
         "occupation_code": soc_code,
-        "job_title": original_job_title, # Store the original search term that led to this SOC
+        "job_title": original_job_title,
         "standardized_title": standardized_soc_title,
         "job_category": job_category,
-        "current_employment": ep_data.get("current_employment"), # From EP data
-        "projected_employment": ep_data.get("projected_employment"), # Calculated in parse_ep_series_response
-        "employment_change_numeric": ep_data.get("employment_change_numeric"),
-        "percent_change": ep_data.get("employment_change_percent"),
-        "annual_job_openings": ep_data.get("annual_job_openings"),
-        "median_wage": oes_data.get("annual_median_wage"), # From OES data
-        "mean_wage": oes_data.get("annual_mean_wage"), # From OES data
-        "oes_data_year": oes_data.get("data_year"),
-        "ep_base_year": ep_data.get("base_year"),
-        "ep_proj_year": ep_data.get("projection_year"),
-        "raw_oes_data_json": json.dumps(oes_data_raw) if isinstance(oes_data_raw, dict) else (oes_data_raw if isinstance(oes_data_raw, str) else '{}'),
-        "raw_ep_data_json": json.dumps(ep_data_raw) if isinstance(ep_data_raw, dict) else (ep_data_raw if isinstance(ep_data_raw, str) else '{}'),
         "last_api_fetch": last_api_fetch_str,
-        # last_updated will be handled by the database default or explicitly set in save_bls_data_to_db
+        "raw_oes_data_json": json.dumps({"status": "not_fetched", "message": "OES fetch not initiated."}),
+        "raw_ep_data_json": json.dumps({"status": "not_fetched", "message": "EP fetch not initiated."}),
+        "current_employment": None, "projected_employment": None, "employment_change_numeric": None,
+        "percent_change": None, "annual_job_openings": None, "median_wage": None, "mean_wage": None,
+        "oes_data_year": None, "ep_base_year": None, "ep_proj_year": None,
+        "error": None,
+        "source": "bls_api_pending" 
     }
+
+    oes_fetch_success = False
+    ep_fetch_success = False
+    oes_error_messages: List[str] = []
+    ep_error_messages: List[str] = []
+
+    # Fetch OES data
+    try:
+        logger.info(f"Fetching OES data for SOC {soc_code} for years {str(current_year - 2)}-{str(current_year)}") # Adjusted to more recent typical availability
+        oes_data_raw = bls_connector.get_oes_data_for_soc(soc_code, start_year=str(current_year - 2), end_year=str(current_year))
+        if oes_data_raw is None: oes_data_raw = {"status": "error", "message": ["OES connector returned None."]}
+        
+        oes_parsed = parse_oes_series_response(oes_data_raw, soc_code)
+        processed_data["raw_oes_data_json"] = json.dumps(oes_data_raw) # Store raw response regardless of status
+        
+        if oes_parsed.get("status") == "success":
+            # Merge only non-None values to avoid overwriting potential EP data later if OES is partial
+            for key, value in oes_parsed.items():
+                if value is not None and key not in ["status", "messages", "occupation_code"]: # occupation_code already set
+                    processed_data[key] = value
+            oes_fetch_success = True
+            logger.info(f"Successfully processed OES data for SOC {soc_code}.")
+        else:
+            oes_error_messages.extend(oes_parsed.get("messages", ["Unknown OES parsing error."]))
+            logger.warning(f"Failed to fetch or parse OES data for SOC {soc_code}. API Response: {processed_data['raw_oes_data_json']}")
+    except Exception as e:
+        oes_error_messages.append(f"Exception during OES fetch/parse: {str(e)}")
+        logger.error(f"Exception fetching/processing OES data for SOC {soc_code}: {e}", exc_info=True)
+        if processed_data["raw_oes_data_json"] is None or processed_data["raw_oes_data_json"] == json.dumps({"status": "not_fetched", "message": "OES fetch not initiated."}):
+             processed_data["raw_oes_data_json"] = json.dumps({"error": str(e), "status": "exception"})
+
+
+    # Fetch EP data
+    try:
+        logger.info(f"Fetching EP data for SOC {soc_code}")
+        ep_data_raw = bls_connector.get_ep_data_for_soc(soc_code)
+        if ep_data_raw is None: ep_data_raw = {"status": "error", "message": ["EP connector returned None."]}
+
+        ep_parsed_outer = parse_ep_series_response(ep_data_raw, soc_code)
+        processed_data["raw_ep_data_json"] = json.dumps(ep_data_raw) # Store raw response regardless of status
+        
+        ep_parsed = ep_parsed_outer.get("projections", {}) # Projections are nested
+        if not ep_parsed: # if "projections" key is missing or its value is None/empty
+            ep_parsed = ep_parsed_outer # Use the outer dict, it might contain error messages
+
+        if ep_parsed_outer.get("status") == "success": # Check status from the outer parsed dict
+            # Merge EP data, prioritizing EP's current_employment if OES failed or didn't provide it
+            if processed_data.get("current_employment") is None and ep_parsed.get("current_employment") is not None:
+                processed_data["current_employment"] = ep_parsed.get("current_employment")
+            
+            # Merge other EP fields
+            for key, value in ep_parsed.items():
+                 if value is not None and key not in ["status", "messages", "occupation_code"]: # occupation_code already set
+                    processed_data[key] = value
+            ep_fetch_success = True
+            logger.info(f"Successfully processed EP data for SOC {soc_code}.")
+        else:
+            ep_error_messages.extend(ep_parsed_outer.get("messages", ["Unknown EP parsing error."])) # Use outer for messages
+            logger.warning(f"Failed to fetch or parse EP data for SOC {soc_code}. API Response: {processed_data['raw_ep_data_json']}")
+    except Exception as e:
+        ep_error_messages.append(f"Exception during EP fetch/parse: {str(e)}")
+        logger.error(f"Exception fetching/processing EP data for SOC {soc_code}: {e}", exc_info=True)
+        if processed_data["raw_ep_data_json"] is None or processed_data["raw_ep_data_json"] == json.dumps({"status": "not_fetched", "message": "EP fetch not initiated."}):
+            processed_data["raw_ep_data_json"] = json.dumps({"error": str(e), "status": "exception"})
+
+    # Consolidate status and error messages
+    if oes_fetch_success and ep_fetch_success:
+        processed_data["source"] = "bls_api_success_both"
+        processed_data["error"] = None # Clear any default error
+        logger.info(f"SOC {soc_code}: Both OES and EP data fetched successfully.")
+    elif oes_fetch_success:
+        processed_data["source"] = "bls_api_partial_success_oes_only"
+        processed_data["error"] = f"EP data fetch/parse failed. Messages: {'; '.join(ep_error_messages)}" if ep_error_messages else "EP data unavailable."
+        logger.warning(f"SOC {soc_code}: OES success, EP failure. Error: {processed_data['error']}")
+    elif ep_fetch_success:
+        processed_data["source"] = "bls_api_partial_success_ep_only"
+        processed_data["error"] = f"OES data fetch/parse failed. Messages: {'; '.join(oes_error_messages)}" if oes_error_messages else "OES data unavailable."
+        logger.warning(f"SOC {soc_code}: EP success, OES failure. Error: {processed_data['error']}")
+    else: # Both failed
+        processed_data["source"] = "bls_api_critical_failure_both"
+        all_api_messages = list(set(oes_error_messages + ep_error_messages)) # Unique messages
+        processed_data["error"] = f"Critical BLS API data fetch failure for OES and EP. Messages: {'; '.join(all_api_messages)}" if all_api_messages else "Critical BLS API data unavailable for OES and EP."
+        logger.error(f"SOC {soc_code}: Critical failure for both OES and EP. Error: {processed_data['error']}")
+    
+    # Attempt to save to database, even if data is partial, but not if critical failure
+    # The `save_bls_data_to_db` function should handle None values for nullable columns.
+    engine = get_db_engine()
+    if processed_data["source"] != "bls_api_critical_failure_both":
+        if not save_bls_data_to_db(processed_data.copy(), engine): # Pass a copy to avoid modification by save function
+            logger.error(f"Failed to save processed data for SOC {soc_code} to database. API source was: {processed_data['source']}")
+            # Update error and source to reflect DB save failure as the most recent/pertinent issue if API was somewhat successful
+            if "success" in processed_data["source"]: # If API fetch was fully or partially successful
+                processed_data["source"] = "bls_api_success_db_save_failed"
+                processed_data["error"] = (processed_data["error"] + "; Additionally, failed to save data to database." if processed_data["error"] 
+                                           else "Successfully fetched API data but failed to save to database.")
+            else: # API fetch also had issues, DB save failure is compounding
+                 processed_data["source"] = "bls_api_fetch_error_and_db_save_failed"
+                 processed_data["error"] = (processed_data["error"] + "; Also, failed to save data to database." if processed_data["error"]
+                                            else "API data fetch had issues, and subsequent database save also failed.")
+        else:
+            logger.info(f"Successfully saved/updated data for SOC {soc_code} to database. API source was: {processed_data['source']}")
+            # If DB save is successful, the source already reflects the API fetch status, which is fine.
+    else:
+        logger.warning(f"Skipping database save for SOC {soc_code} due to critical API fetch errors: {processed_data['error']}")
+
     return processed_data
 
-def save_bls_data_to_db(data_to_save: Dict[str, Any], engine: sqlalchemy.engine.Engine) -> bool:
-    """Saves or updates BLS data in the database using an upsert operation."""
-    if not data_to_save or not data_to_save.get("occupation_code"):
-        logger.error("No data or occupation_code provided to save_bls_data_to_db.")
-        return False
-
-    # Ensure 'last_updated' is set and correctly formatted for the database
-    data_to_save['last_updated'] = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
-    
-    # Ensure 'last_api_fetch' is also correctly formatted if it came as datetime
-    if isinstance(data_to_save.get('last_api_fetch'), datetime.datetime):
-        data_to_save['last_api_fetch'] = data_to_save['last_api_fetch'].strftime('%Y-%m-%d')
-
-
-    # Filter data to only include columns present in the table
-    inspector = inspect(engine)
-    table_columns = {col['name'] for col in inspector.get_columns(bls_job_data_table.name)}
-    
-    # Add 'id' to table_columns if it's not there (it should be, but as a safeguard)
-    if 'id' not in table_columns: # Should not happen with a primary key
-        table_columns.add('id')
-
-    filtered_data_to_save = {k: v for k, v in data_to_save.items() if k in table_columns}
-
-    # Ensure all required non-nullable fields (besides PK) have values or defaults
-    # occupation_code, job_title, standardized_title, last_api_fetch, last_updated
-    for required_field in ['occupation_code', 'job_title', 'standardized_title', 'last_api_fetch', 'last_updated']:
-        if required_field not in filtered_data_to_save or filtered_data_to_save[required_field] is None:
-            logger.error(f"Missing required field '{required_field}' for SOC {data_to_save.get('occupation_code')}. Aborting save.")
-            # Provide defaults for logging if they are missing in data_to_save
-            if required_field == 'job_title' and required_field not in filtered_data_to_save:
-                filtered_data_to_save['job_title'] = "Unknown Job Title"
-            if required_field == 'standardized_title' and required_field not in filtered_data_to_save:
-                filtered_data_to_save['standardized_title'] = "Unknown Standardized Title"
-            if required_field == 'last_api_fetch' and required_field not in filtered_data_to_save:
-                filtered_data_to_save['last_api_fetch'] = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
-            # last_updated is already handled
-            # occupation_code is checked at the beginning
-            # return False # Do not save if critical data is missing.
-            # For now, we'll let it try and potentially fail, to see the DB error.
-            # Better: ensure defaults or raise specific error.
-            # Let's set defaults for title fields if missing.
-            if filtered_data_to_save.get(required_field) is None:
-                 logger.warning(f"Field {required_field} is None for SOC {data_to_save.get('occupation_code')}, this might cause an error if it's not nullable.")
-
-
-    if not filtered_data_to_save.get('occupation_code'): # Should have been caught earlier
-        logger.error("Occupation code is missing in filtered_data_to_save. Aborting save.")
-        return False
-
-    logger.info(f"Attempting to save/update data for SOC: {filtered_data_to_save['occupation_code']}")
-    
-    try:
-        with engine.connect() as conn:
-            # Check if record exists
-            select_stmt = text("SELECT id FROM bls_job_data WHERE occupation_code = :occupation_code")
-            result = conn.execute(select_stmt, {"occupation_code": filtered_data_to_save['occupation_code']})
-            existing_row = result.fetchone()
-
-            if existing_row:
-                # UPDATE
-                update_values = {k: v for k, v in filtered_data_to_save.items() if k != 'id' and k != 'occupation_code'}
-                
-                # Ensure 'last_updated' is explicitly set for updates
-                update_values['last_updated'] = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
-
-                set_clauses = ", ".join([f"{key} = :{key}" for key in update_values.keys()])
-                update_stmt = text(f"UPDATE bls_job_data SET {set_clauses} WHERE occupation_code = :occupation_code")
-                
-                params_for_update = {**update_values, "occupation_code": filtered_data_to_save['occupation_code']}
-                conn.execute(update_stmt, params_for_update)
-                logger.info(f"Updated data in DB for SOC {filtered_data_to_save['occupation_code']}.")
-            else:
-                # INSERT
-                # Ensure all columns are present, defaulting to None if not in filtered_data_to_save
-                # This is critical to match the INSERT statement's column list.
-                data_for_insert = {col: filtered_data_to_save.get(col) for col in table_columns if col != 'id'}
-                
-                # Ensure 'last_updated' is set for new inserts
-                data_for_insert['last_updated'] = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
-                # Ensure 'last_api_fetch' is set if not already
-                if 'last_api_fetch' not in data_for_insert or data_for_insert['last_api_fetch'] is None:
-                     data_for_insert['last_api_fetch'] = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d')
-
-
-                # Ensure required string fields are not None
-                for field in ['occupation_code', 'job_title', 'standardized_title', 'last_api_fetch', 'last_updated']:
-                    if data_for_insert.get(field) is None:
-                        logger.error(f"Cannot insert NULL for non-nullable field '{field}' for SOC {data_for_insert.get('occupation_code')}. Aborting.")
-                        # This should ideally raise an error or be handled more gracefully
-                        # For now, we'll log and it will likely fail at DB level if constraints are violated.
-                        # Let's try to provide a default for title fields if they are None to avoid DB error
-                        if field == 'job_title' and data_for_insert.get(field) is None: data_for_insert[field] = "Unknown Job Title (DB Fallback)"
-                        if field == 'standardized_title' and data_for_insert.get(field) is None: data_for_insert[field] = "Unknown Standardized Title (DB Fallback)"
-
-
-                # Construct the insert statement dynamically based on available keys in data_for_insert
-                # that are also actual table columns
-                valid_insert_data = {k: v for k,v in data_for_insert.items() if k in table_columns and k != 'id'}
-                
-                cols_to_insert = ", ".join(valid_insert_data.keys())
-                vals_to_insert = ", ".join([f":{k}" for k in valid_insert_data.keys()])
-                
-                insert_stmt = text(f"INSERT INTO bls_job_data ({cols_to_insert}) VALUES ({vals_to_insert})")
-                conn.execute(insert_stmt, valid_insert_data)
-                logger.info(f"Inserted new data into DB for SOC {filtered_data_to_save['occupation_code']}.")
-            
-            conn.commit()
-        return True
-    except IntegrityError as e: # Catch specific integrity errors like NotNullViolation
-        logger.error(f"Database integrity error saving data for SOC {data_to_save.get('occupation_code')}: {e}", exc_info=True)
-        # Log the problematic data for inspection
-        logger.error(f"Data that caused integrity error: {json.dumps(filtered_data_to_save, default=str)}")
-        return False
-    except SQLAlchemyError as e:
-        logger.error(f"Database error saving data for SOC {data_to_save.get('occupation_code')}: {e}", exc_info=True)
-        logger.error(f"Data that caused error: {json.dumps(filtered_data_to_save, default=str)}")
-        return False
-    except Exception as e: # Catch any other unexpected errors
-        logger.error(f"Unexpected error saving data for SOC {data_to_save.get('occupation_code')}: {e}", exc_info=True)
-        logger.error(f"Data that caused unexpected error: {json.dumps(filtered_data_to_save, default=str)}")
-        return False
-
-
-def get_bls_data_from_db(occupation_code: str, engine: sqlalchemy.engine.Engine) -> Optional[Dict[str, Any]]:
-    """Retrieves BLS data from the database for a given SOC code."""
-    if not occupation_code: return None
-    try:
-        with engine.connect() as conn:
-            stmt = bls_job_data_table.select().where(bls_job_data_table.c.occupation_code == occupation_code)
-            result = conn.execute(stmt).fetchone()
-            if result:
-                data = dict(result._mapping) # type: ignore
-                # Check freshness (e.g., data less than 90 days old)
-                last_updated_str = data.get("last_updated")
-                if last_updated_str:
-                    try:
-                        last_updated_date = datetime.datetime.strptime(last_updated_str, '%Y-%m-%d').date()
-                        if (datetime.date.today() - last_updated_date).days < 90:
-                            logger.info(f"Found fresh data for SOC {occupation_code} in DB, updated {last_updated_str}.")
-                            return data
-                        else:
-                            logger.info(f"Data for SOC {occupation_code} in DB is stale (updated {last_updated_str}). Will refresh.")
-                    except ValueError:
-                         logger.warning(f"Could not parse last_updated_in_db date '{last_updated_str}' for SOC {occupation_code}.")
-                else:
-                    logger.info(f"Data for SOC {occupation_code} in DB has no last_updated_in_db. Will refresh.")
-            else:
-                logger.info(f"No data found in DB for SOC {occupation_code}.")
-    except SQLAlchemyError as e:
-        logger.error(f"Database error retrieving data for SOC {occupation_code}: {e}", exc_info=True)
-    except Exception as e_gen: # Catch any other error during DB fetch
-        logger.error(f"Unexpected error retrieving data for SOC {occupation_code} from DB: {e_gen}", exc_info=True)
-    return None
-
+# --- Main Function for App Integration ---
 def get_job_data_from_db_or_api(job_title_query: str) -> Dict[str, Any]:
     """
     Main function to get job data. Tries DB first, then BLS API if stale/missing.
@@ -607,20 +559,28 @@ def get_job_data_from_db_or_api(job_title_query: str) -> Dict[str, Any]:
     try:
         processed_data_from_api = fetch_and_process_soc_data(soc_code, job_title_query, standardized_soc_title, job_category)
         
-        if save_bls_data_to_db(processed_data_from_api, engine):
+        if save_bls_data_to_db(processed_data_from_api.copy(), engine): # Pass a copy
             logger.info(f"Successfully saved/updated data for SOC {soc_code} to database.")
         else:
             logger.error(f"Failed to save data for SOC {soc_code} to database. Proceeding with API data for this request.")
-            # Even if DB save fails, we can still return the data fetched from API for the current request.
-            # The `processed_data_from_api` is already in the correct structure.
+            # Update source/error if DB save failed after successful/partial API fetch
+            if "success" in processed_data_from_api.get("source", ""):
+                processed_data_from_api["source"] = "bls_api_success_db_save_failed"
+                processed_data_from_api["error"] = (processed_data_from_api.get("error", "") + "; DB save failed." 
+                                                   if processed_data_from_api.get("error") 
+                                                   else "DB save failed after API success.")
+            elif processed_data_from_api.get("source") != "bls_api_critical_failure_both": # Avoid overwriting critical API failure
+                processed_data_from_api["source"] = "bls_api_fetch_error_and_db_save_failed"
+                processed_data_from_api["error"] = (processed_data_from_api.get("error", "") + "; Also, DB save failed."
+                                                   if processed_data_from_api.get("error")
+                                                   else "API fetch error and DB save failed.")
 
-        # Ensure all expected fields are present after API fetch and processing
-        # The `fetch_and_process_soc_data` should return a complete dict.
-        # We might need a final formatting step if its output isn't directly usable by the app.
-        # For now, assume `fetch_and_process_soc_data` returns data in the app's expected final format.
-        # Re-format to ensure consistency if needed (especially for risk data which is calculated separately)
+
         final_data = format_api_processed_data_to_app_schema(processed_data_from_api, job_title_query, standardized_soc_title, job_category)
-        final_data["source"] = "bls_api_live_fetch" # Indicate it was a live fetch
+        # Ensure the source reflects the most recent status (API fetch or DB save failure)
+        final_data["source"] = processed_data_from_api.get("source", "bls_api_live_fetch") 
+        if processed_data_from_api.get("error"): # Propagate error if any
+            final_data["error"] = processed_data_from_api["error"]
         return final_data
 
     except Exception as e:
@@ -700,8 +660,21 @@ def format_database_row_to_app_schema(db_row_dict: Dict[str, Any], original_job_
 def format_api_processed_data_to_app_schema(processed_data: Dict[str, Any], original_job_title: str, standardized_soc_title:str, job_category_from_soc: str) -> Dict[str, Any]:
     """Formats data processed from API calls into the application's expected schema."""
     
+    # If processed_data itself indicates a critical error from the fetch_and_process_soc_data stage
+    if processed_data.get("source") == "bls_api_critical_failure_both" or \
+       (processed_data.get("error") and "Critical BLS API data fetch failure" in processed_data["error"]):
+        logger.error(f"Formatting API data: Critical error detected for '{original_job_title}' (SOC: {processed_data.get('occupation_code')}). Error: {processed_data.get('error')}")
+        return {
+            "error": processed_data.get("error", "Critical error fetching data from BLS API."),
+            "job_title": original_job_title,
+            "occupation_code": processed_data.get("occupation_code", "00-0000"),
+            "standardized_title": standardized_soc_title,
+            "job_category": job_category_from_soc, # Use category from SOC lookup if API failed critically
+            "source": processed_data.get("source", "api_processing_error_critical")
+        }
+
     final_job_category = processed_data.get('job_category') or job_category_from_soc
-    if final_job_category == "General" and job_category_from_soc != "General":
+    if final_job_category == "General" and job_category_from_soc != "General": # Prefer SOC-derived category if API one is generic
         final_job_category = job_category_from_soc
 
     risk_data = calculate_ai_risk_from_category(
@@ -737,7 +710,7 @@ def format_api_processed_data_to_app_schema(processed_data: Dict[str, Any], orig
         "original_search_title": original_job_title,
         "occupation_code": processed_data.get('occupation_code'),
         "job_category": final_job_category,
-        "source": "bls_api_live_fetch", # Explicitly set source
+        "source": processed_data.get("source", "bls_api_live_fetch"), # Use source from processed_data
         
         "current_employment": current_emp,
         "projected_employment": projected_emp,
@@ -767,7 +740,8 @@ def format_api_processed_data_to_app_schema(processed_data: Dict[str, Any], orig
         "raw_oes_data_json": processed_data.get('raw_oes_data_json'),
         "raw_ep_data_json": processed_data.get('raw_ep_data_json'),
         "last_api_fetch": processed_data.get('last_api_fetch'),
-        "last_updated_in_db": processed_data.get('last_updated') # This is the new 'last_updated' field
+        "last_updated_in_db": processed_data.get('last_updated'), # This is the new 'last_updated' field
+        "error": processed_data.get("error") # Propagate any error messages
     }
 
 
