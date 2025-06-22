@@ -196,8 +196,13 @@ def construct_oes_series_ids(soc_code: str) -> List[str]:
 def parse_oes_series_response(oes_response: Dict[str, Any], soc_code: str) -> Dict[str, Any]:
     """Parses raw OES API response into a structured dictionary."""
     parsed_data: Dict[str, Any] = {
-        "occupation_code": soc_code, "employment": None, "annual_mean_wage": None,
-        "median_wage": None, "data_year": None, "messages": [], "status": "success" # Changed annual_median_wage to median_wage
+        "occupation_code": soc_code,
+        "employment": None,
+        "mean_wage": None,          # renamed from annual_mean_wage for consistency
+        "median_wage": None,
+        "data_year": None,
+        "messages": [],
+        "status": "success"
     }
 
     if not oes_response or oes_response.get("status") != "REQUEST_SUCCEEDED":
@@ -254,8 +259,8 @@ def parse_oes_series_response(oes_response: Dict[str, Any], soc_code: str) -> Di
         if numeric_value is not None:
             if series_id.endswith("01"):  # Employment
                 parsed_data["employment"] = numeric_value
-            elif series_id.endswith("03"):  # Annual Mean Wage
-                parsed_data["annual_mean_wage"] = numeric_value
+            elif series_id.endswith("03"):  # Annual Mean Wage  -> store as mean_wage
+                parsed_data["mean_wage"] = numeric_value
             elif series_id.endswith("04"):  # Annual Median Wage
                 parsed_data["median_wage"] = numeric_value # Changed from annual_median_wage
     
