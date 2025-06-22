@@ -57,7 +57,7 @@ import job_api_integration_database_only as job_api_integration
 import simple_comparison
 import career_navigator
 import bls_job_mapper 
-from bls_job_mapper import TARGET_SOC_CODES 
+from bls_job_mapper import TARGET_SOC_CODES, SOC_TO_CATEGORY_STATIC 
 from job_title_autocomplete_v2 import job_title_autocomplete, load_job_titles_from_db
 from sqlalchemy import text 
 
@@ -281,8 +281,15 @@ def run_batch_processing(batch_size, api_delay):
     progress_bar.progress(st.session_state.admin_processed_count / len(target_socs) if target_socs else 0, text=f"Overall Progress: {st.session_state.admin_processed_count} / {len(target_socs)} SOCs processed.")
     st.rerun() # Rerun to update UI elements
 
-# --- Main Application Tabs ---
-tabs = st.tabs(["Single Job Analysis", "Job Comparison"])
+# ------------------------------------------------------------------
+# --------------------  MAIN APPLICATION TABS  ---------------------
+# ------------------------------------------------------------------
+
+tabs = st.tabs(["Single Job Analysis", "Job Comparison", "Industry Risk Dashboard"])
+
+# ------------------------------------------------------------------
+# --------------------  SINGLE JOB ANALYSIS TAB --------------------
+# ------------------------------------------------------------------
 
 with tabs[0]:
     st.markdown("<h2 style='color: #0084FF;'>Analyze a Job</h2>", unsafe_allow_html=True)
@@ -394,6 +401,11 @@ with tabs[0]:
                     st.markdown("<div style='text-align: center;'><h4 style='color: #0084FF; font-size: 18px;'>5-Year Risk</h4></div>", unsafe_allow_html=True)
                     st.markdown(f"<div style='text-align: center; font-size: 20px; font-weight: bold;'>{year_5_risk if year_5_risk is not None else 0:.1f}%</div>", unsafe_allow_html=True)
             
+            # --------------- REGIONAL ANALYSIS PLACEHOLDER ---------------
+            st.markdown("<h3 style='color: #0084FF; font-size: 20px; margin-top: 25px;'>Regional Analysis (Beta)</h3>",
+                        unsafe_allow_html=True)
+            st.info("📍 Coming soon: Enter a ZIP code to view local AI-risk versus the national average.")
+
             with risk_factors_col:
                 st.markdown("<h3 style='color: #0084FF; font-size: 20px;'>Key Risk Factors</h3>", unsafe_allow_html=True)
                 risk_factors = job_data.get("risk_factors", ["Data unavailable"])
@@ -432,6 +444,55 @@ with tabs[0]:
                 # Final fallback to defaults
                 if skills is None:
                     skills = default_skills
+            # ----------  Skills visualisation  ----------
+            st.markdown("<h3 style='color: #0084FF; font-size: 20px;'>Key Skills Analysis</h3>", unsafe_allow_html=True)
+            skill_cols = st.columns(3)
+            with skill_cols[0]:
+                st.markdown("#### Technical")
+                for s in skills.get("technical_skills", []):
+                    st.markdown(f"🔧 {s}")
+            with skill_cols[1]:
+                st.markdown("#### Soft")
+                for s in skills.get("soft_skills", []):
+                    st.markdown(f"💬 {s}")
+            with skill_cols[2]:
+                st.markdown("#### Emerging")
+                for s in skills.get("emerging_skills", []):
+                    st.markdown(f"🚀 {s}")
+
+            # ----------  Career transition suggestions  ----------
+            st.markdown("<h3 style='color: #0084FF; font-size: 20px; margin-top: 25px;'>Career-Transition Ideas</h3>",
+                        unsafe_allow_html=True)
+            if callable(get_lowest_risk_jobs):
+                low_risk_jobs = get_lowest_risk_jobs(limit=3)
+                if low_risk_jobs:
+                    for j in low_risk_jobs:
+                        j_title = j.get("job_title", "Unknown")
+                        j_risk  = j.get("risk_category", "Low")
+                        st.markdown(f"✅ **{j_title}**  – _risk: {j_risk}_")
+                else:
+                    st.info("No alternative low-risk roles available yet.")
+            else:
+                st.info("Career suggestions not available (database fallback in use).")
+
+            # ----------  Export results ----------
+            export_payload = {
+                "job_title": search_job_title,
+                "analysis_time": datetime.datetime.utcnow().isoformat(),
+                "risk": {
+                    "one_year": job_data.get("year_1_risk"),
+                    "five_year": job_data.get("year_5_risk"),
+                    "category": job_data.get("risk_category"),
+                },
+                "skills": skills,
+                "bls": job_data.get("projections", {})
+            }
+            st.download_button("⬇️ Download analysis (JSON)",
+                               data=json.dumps(export_payload, indent=2),
+                               file_name=f"{search_job_title.replace(' ','_')}_analysis.json",
+                               mime="application/json")
+
+            # ----------  Recent searches ----------
             st.markdown("<h3 style='color: #0084FF; font-size: 20px;'>Recent Job Searches</h3>", unsafe_allow_html=True)
             if get_recent_searches: # Check if function is available
                 recent_searches_data = get_recent_searches(limit=5)
@@ -473,6 +534,10 @@ with tabs[0]:
                 else:
                     st.info("No recent searches yet.")
 
+# ------------------------------------------------------------------
+# --------------------  JOB COMPARISON TAB -------------------------
+# ------------------------------------------------------------------
+
 with tabs[1]:
     st.markdown("<h2 style='color: #0084FF;'>Compare Jobs</h2>", unsafe_allow_html=True)
     st.markdown("Compare the AI displacement risk for multiple jobs side by side. Add up to 5 jobs.")
@@ -512,8 +577,10 @@ with tabs[1]:
             st.rerun()
 
     if st.session_state.compare_jobs_list:
-        with st.spinner("Fetching comparison data..."):
-            comparison_job_data = simple_comparison.get_job_comparison_data(st.session_state.compare_jobs_list)
+        with st.spinner("Fetching comparison data, please wait..."):
+            comparison_job_data = simple_comparison.get_job_comparison_data(
+                st.session_state.compare_jobs_list
+            )
         
         if comparison_job_data and not all("error" in data for data in comparison_job_data.values()):
             comp_tabs = st.tabs(["Comparison Chart", "Detailed Table", "Risk Heatmap", "Radar Analysis"])
@@ -535,6 +602,84 @@ with tabs[1]:
                 else: st.info("Not enough data to create radar chart.")
         else:
             st.error("Could not retrieve enough data for comparison. Please ensure job titles are valid or try different ones.")
+
+# ------------------------------------------------------------------
+# --------------------  INDUSTRY RISK DASHBOARD  -------------------
+# ------------------------------------------------------------------
+
+with tabs[2]:
+    st.markdown("<h2 style='color: #0084FF;'>Industry Risk Dashboard</h2>", unsafe_allow_html=True)
+    st.markdown("Aggregate view of AI displacement risk and growth trends by industry category.")
+
+    @st.cache_data(ttl=3600)
+    def _get_industry_aggregate() -> pd.DataFrame:
+        """Return dataframe with industry level aggregates: avg 5-year risk & growth."""
+        categories = {v for v in SOC_TO_CATEGORY_STATIC.values()}
+        records = []
+
+        if database_available and db_engine:
+            try:
+                df_db = pd.read_sql("SELECT occupation_code, percent_change, job_category \
+                                     FROM bls_job_data", db_engine)
+            except Exception as e:
+                logger.warning(f"Industry dashboard DB query failed: {e}")
+                df_db = pd.DataFrame()
+        else:
+            df_db = pd.DataFrame()
+
+        for cat in sorted(categories):
+            # Estimate risk using bls_job_mapper profiles
+            profile = bls_job_mapper.calculate_ai_risk_from_category(cat, "00-0000")
+            avg_risk = profile.get("year_5_risk", 50)
+
+            # Growth from DB if available
+            if not df_db.empty:
+                subset = df_db[df_db["job_category"] == cat]
+                growth = subset["percent_change"].mean() if not subset.empty else None
+            else:
+                growth = None
+
+            records.append({
+                "Industry": cat,
+                "Avg 5-Year AI Risk (%)": round(avg_risk, 1),
+                "Avg 10-Year Growth (%)": round(growth, 1) if growth is not None else None
+            })
+        df_ind = pd.DataFrame(records).sort_values("Avg 5-Year AI Risk (%)", ascending=False)
+        return df_ind
+
+    df_industry = _get_industry_aggregate()
+
+    col_risk, col_growth = st.columns(2)
+    with col_risk:
+        st.subheader("Risk Ranking")
+        fig_risk = go.Figure(go.Bar(
+            x=df_industry["Avg 5-Year AI Risk (%)"],
+            y=df_industry["Industry"],
+            orientation='h',
+            marker_color='#FF8C42'
+        ))
+        fig_risk.update_layout(height=600, yaxis={'categoryorder':'total ascending'},
+                               margin=dict(l=150, r=20, t=40, b=20))
+        st.plotly_chart(fig_risk, use_container_width=True)
+
+    with col_growth:
+        st.subheader("Projected Growth")
+        df_growth = df_industry.dropna(subset=["Avg 10-Year Growth (%)"])
+        if not df_growth.empty:
+            fig_growth = go.Figure(go.Bar(
+                x=df_growth["Avg 10-Year Growth (%)"],
+                y=df_growth["Industry"],
+                orientation='h',
+                marker_color='#63A4FF'
+            ))
+            fig_growth.update_layout(height=600, yaxis={'categoryorder':'total ascending'},
+                                     margin=dict(l=150, r=20, t=40, b=20))
+            st.plotly_chart(fig_growth, use_container_width=True)
+        else:
+            st.info("Growth data unavailable for industries (populate database to enable).")
+
+    st.subheader("Industry Aggregate Table")
+    st.dataframe(df_industry, use_container_width=True)
 
 # --- Admin Controls Expander ---
 with st.sidebar:
