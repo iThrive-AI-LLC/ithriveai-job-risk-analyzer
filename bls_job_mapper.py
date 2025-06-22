@@ -298,21 +298,20 @@ def generate_employment_trend(current: Optional[int], projected: Optional[int], 
 def calculate_ai_risk_from_category(job_category: str, occupation_code: str) -> Dict[str, Any]:
     """Calculate AI displacement risk based on job category and specific SOC code modifiers."""
     profiles = {
-        "Computer and Mathematical Occupations": {"base": 35, "inc": 8, "var": 7, "prot": ["Complex system design", "Novel algorithm development"]},
-        "Management Occupations": {"base": 20, "inc": 4, "var": 4, "prot": ["Strategic leadership", "Complex stakeholder management"]},
-        "Business and Financial Operations Occupations": {"base": 45, "inc": 9, "var": 6, "prot": ["Strategic financial planning", "Client advisory"]},
-        "Healthcare Practitioners and Technical Occupations": {"base": 15, "inc": 6, "var": 5, "prot": ["Direct patient care and empathy", "Complex clinical judgment"]},
-        "Educational Instruction and Library Occupations": {"base": 20, "inc": 5, "var": 5, "prot": ["Mentorship and social-emotional support", "Creative lesson planning"]},
-        "Legal Occupations": {"base": 30, "inc": 7, "var": 6, "prot": ["Complex legal strategy", "Courtroom advocacy"]},
-        "Office and Administrative Support Occupations": {"base": 65, "inc": 7, "var": 4, "prot": ["Complex office management", "Handling exceptional cases"]},
-        "Sales and Related Occupations": {"base": 55, "inc": 8, "var": 6, "prot": ["Complex relationship-based sales", "High-value negotiation"]},
-        "Production Occupations": {"base": 70, "inc": 5, "var": 4, "prot": ["Quality control oversight", "Machine maintenance and setup"]},
-        "Transportation and Material Moving Occupations": {"base": 60, "inc": 9, "var": 5, "prot": ["Handling complex urban routes", "Last-mile delivery logistics"]},
+        "Computer and Mathematical Occupations": {"base": 35, "inc": 8, "variance": 7, "prot": ["Complex system design", "Novel algorithm development"]},
+        "Management Occupations": {"base": 20, "inc": 4, "variance": 4, "prot": ["Strategic leadership", "Complex stakeholder management"]},
+        "Business and Financial Operations Occupations": {"base": 45, "inc": 9, "variance": 6, "prot": ["Strategic financial planning", "Client advisory"]},
+        "Healthcare Practitioners and Technical Occupations": {"base": 15, "inc": 6, "variance": 5, "prot": ["Direct patient care and empathy", "Complex clinical judgment"]},
+        "Educational Instruction and Library Occupations": {"base": 20, "inc": 5, "variance": 5, "prot": ["Mentorship and social-emotional support", "Creative lesson planning"]},
+        "Legal Occupations": {"base": 30, "inc": 7, "variance": 6, "prot": ["Complex legal strategy", "Courtroom advocacy"]},
+        "Office and Administrative Support Occupations": {"base": 65, "inc": 7, "variance": 4, "prot": ["Complex office management", "Handling exceptional cases"]},
+        "Sales and Related Occupations": {"base": 55, "inc": 8, "variance": 6, "prot": ["Complex relationship-based sales", "High-value negotiation"]},
+        "Production Occupations": {"base": 70, "inc": 5, "variance": 4, "prot": ["Quality control oversight", "Machine maintenance and setup"]},
+        "Transportation and Material Moving Occupations": {"base": 60, "inc": 9, "variance": 5, "prot": ["Handling complex urban routes", "Last-mile delivery logistics"]},
         "Default": {
             "base": 40,
             "inc": 6,
-            "var": 5,
-            "variance": 6,  # ensure key exists to avoid KeyError
+            "variance": 5,
             "prot": ["Human creativity and adaptability", "Complex interpersonal skills"]
         }
     }
