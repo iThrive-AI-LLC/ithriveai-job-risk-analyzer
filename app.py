@@ -1193,20 +1193,32 @@ with st.sidebar.expander("⚙️  ADMIN CONTROLS", expanded=False):
         st.warning("Database not configured – running in limited mode.")
 
     # Attempt to import a dedicated admin dashboard (if it exists)
+    import importlib
     try:
-        import admin_dashboard  # type: ignore
+        admin_dashboard = importlib.import_module("admin_dashboard")  # type: ignore
 
-        # If that module exposes a render() helper, call it:
-        if hasattr(admin_dashboard, "render") and callable(admin_dashboard.render):
-            admin_dashboard.render()
+        # Safely attempt to call render() if it exists
+        if callable(getattr(admin_dashboard, "render", None)):
+            try:
+                admin_dashboard.render()  # type: ignore[attr-defined]
+            except st.errors.StreamlitAPIException as api_exc:  # noqa: E501
+                # Catch nested element violations or any Streamlit-specific
+                # issues coming from within the admin dashboard and show an
+                # informative message instead of crashing the main app.
+                st.error(
+                    "Admin dashboard could not be rendered inside this expander "
+                    "because of a Streamlit layout conflict.\n\n"
+                    f"Details: {api_exc.__class__.__name__}"
+                )
         else:
             st.info(
-                "Advanced batch-loading tools are available in `admin_dashboard.py`, "
-                "but that module does not expose a `render()` function."
+                "Admin dashboard module is available but does **not** expose a "
+                "`render()` function.  Please update `admin_dashboard.py` to "
+                "wrap UI code inside a callable `render()`."
             )
     except ModuleNotFoundError:
         st.info(
-            "The full admin dashboard is not deployed in this environment. "
-            "To load BLS data or manage the DB in bulk, please deploy "
-            "`admin_dashboard.py` and ensure it is on the Python path."
+            "Admin dashboard module (`admin_dashboard.py`) is not deployed in "
+            "this environment.  Deploy the module and ensure it is on the "
+            "Python path if you wish to enable advanced data-management tools."
         )
