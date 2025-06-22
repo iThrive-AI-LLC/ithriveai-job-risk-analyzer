@@ -57,18 +57,9 @@ if not logger.handlers:
     logger.addHandler(stream_handler)
 
 # --- Helper Functions ---
-def get_db_engine_instance():
-    """Safely gets a database engine instance using database.py utilities."""
-    if not MODULE_IMPORT_SUCCESS or not hasattr(database, 'get_db_engine'):
-        logger.error("database.get_db_engine function is not available.")
-        st.error("Database module is not correctly loaded. Cannot get engine.")
-        return None
-    try:
-        return database.get_db_engine()
-    except Exception as e:
-        logger.error(f"Failed to get database engine: {e}", exc_info=True)
-        st.error(f"Failed to initialize database engine: {e}")
-        return None
+# database.engine is initialised inside database.py and should be
+# reused directly rather than via a helper that called the now-removed
+# `database.get_db_engine()` function.
 
 def load_population_progress():
     """Loads population progress from the JSON file."""
@@ -135,7 +126,16 @@ def get_database_stats(engine):
     return stats
 
 # --- Streamlit UI ---
-st.title("⚙️ Admin Dashboard: BLS Data Management")
+# Wrap all Streamlit drawing code in a render() function so that the
+# dashboard is only rendered when explicitly invoked.  This prevents
+# accidental execution (and nested element violations) when the module
+# is imported by app_production.py inside a sidebar expander.
+
+
+def render() -> None:
+    """Render the Admin Dashboard Streamlit UI."""
+
+    st.title("⚙️ Admin Dashboard: BLS Data Management")
 
 if not MODULE_IMPORT_SUCCESS:
     st.error(CRITICAL_ERROR_MESSAGE)
@@ -159,7 +159,8 @@ if not st.session_state.population_progress.get("all_target_soc_codes") or \
     # For simplicity, if the list changes, a reset might be safest unless complex diffing is done.
 
 
-engine = get_db_engine_instance()
+# Use the singleton SQLAlchemy engine exposed by database.py
+engine = database.engine
 
 tab1, tab2, tab3 = st.tabs(["📊 Dashboard & Stats", "📥 Database Population Tool", "📜 View Logs"])
 
@@ -438,12 +439,24 @@ with tab3:
     else:
         st.info("No SOC codes are currently marked as failed.")
 
-# General Footer or Info
-st.sidebar.markdown("---")
-st.sidebar.info(
-    "Admin Dashboard v1.0\n\n"
-    "Ensure DATABASE_URL and BLS_API_KEY are correctly set in Streamlit secrets for production."
-)
-if not MODULE_IMPORT_SUCCESS:
-    st.sidebar.error("One or more critical modules failed to import. Dashboard functionality will be severely limited.")
+    # General Footer or Info
+    st.sidebar.markdown("---")
+    st.sidebar.info(
+        "Admin Dashboard v1.0\n\n"
+        "Ensure DATABASE_URL and BLS_API_KEY are correctly set in Streamlit secrets for production."
+    )
+    if not MODULE_IMPORT_SUCCESS:
+        st.sidebar.error(
+            "One or more critical modules failed to import. "
+            "Dashboard functionality will be severely limited."
+        )
+
+
+# ----------------------------------------------------------------------
+# Only render when this file is the main entry-point
+# ----------------------------------------------------------------------
+
+
+if __name__ == "__main__":
+    render()
 
