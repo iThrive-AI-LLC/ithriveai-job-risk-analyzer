@@ -415,4 +415,3 @@ if engine:
 
 logger.info(f"database.py loaded. Database available: {engine is not None and Session is not None}")
 print(f"database.py loaded. Database available: {engine is not None and Session is not None}")
-
