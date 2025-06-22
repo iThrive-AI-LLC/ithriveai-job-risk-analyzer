@@ -18,7 +18,18 @@ import threading
 
 import pandas as pd
 import sqlalchemy
-from sqlalchemy import create_engine, text, Table, Column, Integer, String, Float, MetaData, inspect
+from sqlalchemy import (
+    create_engine,
+    text,
+    Table,
+    Column,
+    Integer,
+    String,
+    Float,
+    MetaData,
+    Text,          # <- added import for SQLAlchemy Text type
+    inspect,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 
