@@ -170,11 +170,13 @@ with tab1:
         with col1:
             st.subheader("Database Connectivity")
             if hasattr(database, 'check_database_health'):
-                db_health = database.check_database_health()
-                if db_health.get("status") == "healthy":
-                    st.success(f"Connected: {db_health.get('message', 'OK')}")
+                db_health = database.check_database_health(engine)
+                if db_health == "OK":
+                    st.success("Connected")
+                elif db_health == "Not Configured":
+                    st.warning("Connection not configured")
                 else:
-                    st.error(f"Connection Issue: {db_health.get('message', 'Failed')}")
+                    st.error("Connection Issue")
             else:
                 st.warning("database.check_database_health not available.")
         
