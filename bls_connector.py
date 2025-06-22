@@ -34,23 +34,39 @@ MAX_SERIES_PER_REQUEST = 50 # BLS API v2 limit
 # --- Helper Function to Get API Key ---
 def _get_api_key() -> Optional[str]:
     """Retrieves the BLS API key from environment variables or Streamlit secrets."""
-    api_key = os.environ.get('BLS_API_KEY')
-    if not api_key:
-        try:
-            # Check if st.secrets is available and is the new secrets manager
-            if hasattr(st, 'secrets') and hasattr(st.secrets, 'get') and callable(st.secrets.get):
-                api_key = st.secrets.get("api_keys", {}).get("BLS_API_KEY")
-            # Fallback for older st.secrets dictionary-like access
-            elif hasattr(st, 'secrets') and isinstance(st.secrets, dict) and "api_keys" in st.secrets:
-                 api_key = st.secrets.get("api_keys", {}).get("BLS_API_KEY")
+    # 1) Environment variable first (works for CLI/cron jobs etc.)
+    env_key = os.environ.get("BLS_API_KEY")
+    if env_key:
+        logger.debug("BLS_API_KEY obtained from environment variable.")
+        return env_key
 
-        except Exception as e:
-            logger.warning(f"Could not access Streamlit secrets to get BLS_API_KEY: {e}")
-    
-    if not api_key:
-        logger.error("BLS_API_KEY not found in environment variables or Streamlit secrets.")
-        return None
-    return api_key
+    # 2) Fallback to Streamlit secrets **only** if env var missing
+    try:
+        import streamlit as _st  # local import – may fail in non-Streamlit contexts
+
+        # Newer secrets API: st.secrets.get("section", {}).get("key")
+        if hasattr(_st, "secrets") and callable(getattr(_st.secrets, "get", None)):
+            secret_key = _st.secrets.get("api_keys", {}).get("BLS_API_KEY")
+            if secret_key:
+                logger.debug("BLS_API_KEY obtained from Streamlit new-style secrets.")
+                return secret_key
+
+        # Older secrets object behaves like a dict
+        if hasattr(_st, "secrets") and isinstance(_st.secrets, dict):
+            secret_key = _st.secrets.get("api_keys", {}).get("BLS_API_KEY")
+            if secret_key:
+                logger.debug("BLS_API_KEY obtained from Streamlit dict-style secrets.")
+                return secret_key
+
+    except ModuleNotFoundError:
+        # Streamlit not installed – silently ignore
+        pass
+    except Exception as e:
+        logger.warning(f"Error while accessing Streamlit secrets for BLS_API_KEY: {e}")
+
+    # 3) Still not found
+    logger.error("BLS_API_KEY not found in environment or Streamlit secrets.")
+    return None
 
 def is_api_key_available() -> bool:
     """Checks if the BLS API key is configured."""

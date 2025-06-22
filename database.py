@@ -48,23 +48,38 @@ try:
     # Attempt to initialize database globals
     database_url_env = os.environ.get("DATABASE_URL")
     if database_url_env is None:
+        # ------------------------------------------------------------------
+        # TEMPORARY BYPASS:
+        # When running this module outside a full Streamlit environment
+        # (e.g. during bulk-population scripts) we do **not** want a missing
+        # secrets.toml to raise `StreamlitSecretNotFoundError`.  Swallow *any*
+        # Streamlit-related exception and fall back to environment variables
+        # only.  Remove this wide `Exception` catch once the Streamlit app
+        # is fully configured.
+        # ------------------------------------------------------------------
         try:
-            import streamlit as st # Local import for secrets
-            if hasattr(st, 'secrets'):
-                # Check if st.secrets is a dict (older Streamlit) or an object with .get (newer)
-                if isinstance(st.secrets, dict): 
+            import streamlit as st  # Local import for secrets
+            if hasattr(st, "secrets"):
+                # Older Streamlit: st.secrets is a dict
+                if isinstance(st.secrets, dict):
                     database_url_env = st.secrets.get("database", {}).get("DATABASE_URL")
-                elif callable(getattr(st.secrets, "get", None)): # Check if st.secrets has a 'get' method
-                     database_url_env = st.secrets.get("database", {}).get("DATABASE_URL")
+                # Newer Streamlit: st.secrets.get("section", {}).get(...)
+                elif callable(getattr(st.secrets, "get", None)):
+                    database_url_env = st.secrets.get("database", {}).get("DATABASE_URL")
 
             if database_url_env:
                 logger.info("Using DATABASE_URL from Streamlit secrets.")
-                print("Using DATABASE_URL from Streamlit secrets.") # Keep print for Replit console
-        except (ImportError, AttributeError) as e:
-            # Streamlit might not be available in all contexts, or secrets might not be set up
-            logger.info(f"Streamlit secrets not available or error accessing them: {e}. DATABASE_URL must be in environment.")
-            print(f"Streamlit secrets not available or error accessing them: {e}. DATABASE_URL must be in environment.")
-            pass # Continue, database_url_env might still be None
+                print("Using DATABASE_URL from Streamlit secrets.")  # Keep print for console
+        except Exception as e:  # Catch *any* error (ImportError, secrets error, etc.)
+            logger.info(
+                f"Streamlit secrets not available or error accessing them: {e}. "
+                "DATABASE_URL must be supplied via environment variable."
+            )
+            print(
+                f"Streamlit secrets not available or error accessing them: {e}. "
+                "DATABASE_URL must be supplied via environment variable."
+            )
+            # Continue – database_url_env may still be None
 
     if database_url_env:
         logger.info("Attempting to initialize database engine and session factory.")
