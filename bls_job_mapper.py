@@ -50,6 +50,8 @@ except ImportError:
         @staticmethod
         def search_occupations(*args: Any, **kwargs: Any) -> List[Dict[str, str]]: return []
     bls_connector = bls_connector_stub() # type: ignore
+    # Ensure _FULL_SOC_LIST is always defined to avoid NameError later
+    _FULL_SOC_LIST: List[Tuple[str, str]] = []
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -369,3 +371,4 @@ def get_job_titles_for_autocomplete() -> List[Dict[str, str]]:
     except SQLAlchemyError as e:
         logger.error(f"Failed to load job titles for autocomplete: {e}", exc_info=True)
     return []
+
