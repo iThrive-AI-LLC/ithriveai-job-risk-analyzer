@@ -261,6 +261,30 @@ st.markdown("<h1 style='text-align: center; color: #0084FF;'>Is your job at risk
 st.markdown("<p style='text-align: center; color: #4CACE5; font-size: 24px; font-weight: 600;'>AI Job Displacement Risk Analyzer</p>", unsafe_allow_html=True)
 st.markdown("<p style='text-align: center; color: #666666; font-weight: bold; font-size: 16px;'>Discover how AI might impact your career in the next 5 years and get personalized recommendations.</p>", unsafe_allow_html=True)
 
+# ------------------------------------------------------------------
+# Utility: daily “keep-alive”/refresh hook
+# ------------------------------------------------------------------
+# In the earlier versions this helper ensured we ran a lightweight
+# DB touch once per day to keep the Postgres (Neon) instance warm.
+# The UI currently only needs the function to exist – we can add a
+# no-op placeholder that can be expanded later without breaking code.
+
+_LAST_REFRESH_SESSION_KEY = "last_refresh_check"
+
+def check_data_refresh() -> None:
+    """
+    Placeholder for daily data-refresh / DB keep-warm logic.
+    Currently it just records the last time it was called so that the
+    single-job tab can invoke it safely without producing NameError.
+    """
+    # Only run once per Streamlit script execution to avoid overhead.
+    if _LAST_REFRESH_SESSION_KEY in st.session_state:
+        return
+
+    st.session_state[_LAST_REFRESH_SESSION_KEY] = datetime.datetime.utcnow().isoformat()
+    # Future enhancement: perform lightweight query or trigger refresh job
+    # e.g., call a function from `db_refresh` module when available.
+
 # --- Database Availability Check ---
 if not database_available:
     st.error("Database connection failed. The application is in a limited mode or cannot function. Please check the database configuration or contact support.")
