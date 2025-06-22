@@ -108,7 +108,7 @@ import job_api_integration_database_only as job_api_integration
 import simple_comparison
 import career_navigator
 import bls_job_mapper 
-from bls_job_mapper import TARGET_SOC_CODES 
+from soc_codes import TARGET_SOC_CODES  # full 800+ list
 from job_title_autocomplete_v2 import job_title_autocomplete, load_job_titles_from_db
 from sqlalchemy import text 
 
@@ -305,12 +305,12 @@ if 'admin_processed_count' not in st.session_state:
     st.session_state.admin_processed_count = 0
 
 if not st.session_state.admin_target_socs:
-    try:
-        st.session_state.admin_target_socs = bls_job_mapper.TARGET_SOC_CODES
-        logger.info(f"Admin: Successfully loaded {len(st.session_state.admin_target_socs)} target SOC codes.")
-    except AttributeError:
-        logger.error("Admin: TARGET_SOC_CODES not found in bls_job_mapper. Admin tool will be limited.")
-        st.session_state.admin_target_socs = []
+    # Load the full list directly from soc_codes (imported as TARGET_SOC_CODES)
+    st.session_state.admin_target_socs = TARGET_SOC_CODES
+    logger.info(
+        f"Admin: Successfully loaded {len(st.session_state.admin_target_socs)} "
+        "target SOC codes from soc_codes."
+    )
             
 # --- Admin Dashboard Logic ---
 def run_batch_processing(batch_size, api_delay):
