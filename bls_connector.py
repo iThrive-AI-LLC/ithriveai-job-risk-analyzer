@@ -152,24 +152,44 @@ def get_bls_data(series_ids: List[str], start_year: str, end_year: str, api_key_
     return all_results_data
 
 # --- OES Data Functions ---
-def construct_oes_series_ids(soc_code: str) -> List[str]:
+def build_oes_series_id(soc_code: str) -> Dict[str, str]:
     """
-    Constructs OES series IDs for employment and wages.
-    Area: 0000000 (U.S. Total)
-    Industry: 000000 (Cross-industry, All ownerships)
-    Datatype: 01 (Employment), 03 (Annual Mean Wage), 04 (Annual Median Wage)
+    Build a dictionary of OES series IDs used elsewhere in the codebase.
+
+    Returns
+    -------
+    dict
+        {
+          "employment":   "...01",
+          "mean_wage":    "...03",
+          "median_wage":  "...04"
+        }
     """
     soc_part = soc_code.replace("-", "")
     if not (len(soc_part) == 6 and soc_part.isdigit()):
-        logger.error(f"Invalid SOC code format for OES series: {soc_code}. Expected XX-XXXX or XXXXXX (digits).")
+        logger.error(
+            f"Invalid SOC code format for OES series: {soc_code}. "
+            "Expected XX-XXXX or XXXXXX digits."
+        )
+        return {}
+
+    prefix = "OEU0000000000000"  # National ‑ all industries / ownerships
+    return {
+        "employment":  f"{prefix}{soc_part}01",
+        "mean_wage":   f"{prefix}{soc_part}03",
+        "median_wage": f"{prefix}{soc_part}04",
+    }
+
+
+def construct_oes_series_ids(soc_code: str) -> List[str]:
+    """
+    Legacy helper kept for backward compatibility.
+    Now simply returns list(build_oes_series_id(...).values()).
+    """
+    series_map = build_oes_series_id(soc_code)
+    if not series_map:
         return []
-    
-    # National data, all industries
-    series_ids = [
-        f"OEU0000000000000{soc_part}01",  # Employment
-        f"OEU0000000000000{soc_part}03",  # Annual Mean Wage
-        f"OEU0000000000000{soc_part}04",  # Annual Median Wage
-    ]
+    series_ids = list(series_map.values())
     logger.info(f"Constructed OES series IDs for SOC {soc_code}: {series_ids}")
     return series_ids
 
@@ -588,5 +608,3 @@ if __name__ == "__main__":
         print("\n--- Testing Occupation Search for '15-1252' ---")
         search_results_code = search_occupations("151252")
         print(json.dumps(search_results_code, indent=2))
-
-
