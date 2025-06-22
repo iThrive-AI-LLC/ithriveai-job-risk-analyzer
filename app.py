@@ -948,18 +948,9 @@ with tabs[1]:  # Job Comparison tab
                 
                 # Get additional data from job API integration and our hardcoded BLS data
                 try:
-                    # Import our BLS employment data module with hardcoded values
-                    import bls_employment_data
-                    
-                    # Try to get data from the API first
+                    # Get up-to-date BLS data (via Neon cache / API)
                     api_data = get_job_data(job_title)
                     api_bls_data = api_data.get("bls_data", {})
-                    
-                    # If API data not available, try hardcoded BLS data
-                    if not api_bls_data.get("employment"):
-                        hardcoded_data = bls_employment_data.get_employment_data(job_title)
-                        if hardcoded_data:
-                            api_bls_data = hardcoded_data
                     
                     # Use API data if available, otherwise use job_info data
                     employment = api_bls_data.get("employment") or bls_data.get("employment", "N/A")
@@ -976,6 +967,7 @@ with tabs[1]:  # Job Comparison tab
                     if isinstance(growth, (int, float)) and growth != "N/A":
                         growth = f"{float(growth):+.1f}"
                 except Exception as e:
+                    # If any error occurs fall back to already-loaded row data
                     print(f"Error getting API data for {job_title}: {str(e)}")
                     employment = bls_data.get("employment", "N/A")
                     openings = bls_data.get("annual_job_openings", "N/A")
@@ -1152,3 +1144,53 @@ with tabs[1]:  # Job Comparison tab
             </a>
         </div>
         """, unsafe_allow_html=True)
+
+# ------------------------------------------------------------------
+# Sidebar Admin Controls (minimal re-introduction)
+# ------------------------------------------------------------------
+
+# Place the admin tools in a sidebar expander so normal users don’t see
+# them unless explicitly opened.  If admins need the full batch-loading
+# dashboard, they should import `admin_dashboard` which can hold all of
+# the heavy logic; otherwise we at least surface DB health stats here.
+
+with st.sidebar.expander("⚙️  ADMIN CONTROLS", expanded=False):
+    st.subheader("Administrative Tools")
+
+    # Quick DB health indicator
+    if database_available:
+        from sqlalchemy import text
+
+        status = "❌  Error"
+        try:
+            db_url = os.environ.get("DATABASE_URL")
+            if db_url:
+                _tmp_engine = create_engine(db_url)
+                with _tmp_engine.connect() as _conn:
+                    _conn.execute(text("SELECT 1"))
+                status = "✅  Connected"
+        except Exception as _admin_db_exc:
+            status = f"⚠️  {type(_admin_db_exc).__name__}"
+
+        st.write(f"Database status: **{status}**")
+    else:
+        st.warning("Database not configured – running in limited mode.")
+
+    # Attempt to import a dedicated admin dashboard (if it exists)
+    try:
+        import admin_dashboard  # type: ignore
+
+        # If that module exposes a render() helper, call it:
+        if hasattr(admin_dashboard, "render") and callable(admin_dashboard.render):
+            admin_dashboard.render()
+        else:
+            st.info(
+                "Advanced batch-loading tools are available in `admin_dashboard.py`, "
+                "but that module does not expose a `render()` function."
+            )
+    except ModuleNotFoundError:
+        st.info(
+            "The full admin dashboard is not deployed in this environment. "
+            "To load BLS data or manage the DB in bulk, please deploy "
+            "`admin_dashboard.py` and ensure it is on the Python path."
+        )
