@@ -346,7 +346,7 @@ def generate_employment_trend(current: Optional[int], projected: Optional[int], 
     return [int(current + (annual_change * i)) for i in range(num_years)]
 
 def calculate_ai_risk_from_category(job_category: str, occupation_code: str) -> Dict[str, Any]:
-    """Calculate AI risk based on job category and specific SOC code modifiers."""
+    """Calculate AI displacement risk based on job category and specific SOC code modifiers."""
     profiles = {
         "Computer and Mathematical Occupations": {"base": 35, "inc": 8, "var": 7, "prot": ["Complex system design", "Novel algorithm development"]},
         "Management Occupations": {"base": 20, "inc": 4, "var": 4, "prot": ["Strategic leadership", "Complex stakeholder management"]},
@@ -394,3 +394,4 @@ def get_job_titles_for_autocomplete() -> List[Dict[str, str]]:
     except SQLAlchemyError as e:
         logger.error(f"Failed to load job titles for autocomplete: {e}", exc_info=True)
     return []
+
