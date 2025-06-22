@@ -135,7 +135,6 @@ def get_database_stats(engine):
     return stats
 
 # --- Streamlit UI ---
-st.set_page_config(page_title="Admin Dashboard - BLS Data Management", layout="wide", page_icon="⚙️")
 st.title("⚙️ Admin Dashboard: BLS Data Management")
 
 if not MODULE_IMPORT_SUCCESS:
