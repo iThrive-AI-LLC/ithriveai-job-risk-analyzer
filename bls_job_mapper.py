@@ -280,9 +280,9 @@ def fetch_and_process_soc_data(soc_code: str, job_title: str, db_engine_instance
     ep_series = bls_connector.build_ep_series_id(soc_code)
     ep_data_raw = bls_connector.get_bls_data(list(ep_series.values()), start_year, end_year)
     
-    # Parse data
-    oes_parsed = bls_connector.parse_oes_response(oes_data_raw, soc_code)
-    ep_parsed = bls_connector.parse_ep_response(ep_data_raw, soc_code)
+    # Parse data with correct helper names in bls_connector
+    oes_parsed = bls_connector.parse_oes_series_response(oes_data_raw, soc_code)
+    ep_parsed = bls_connector.parse_ep_series_response(ep_data_raw, soc_code)
     
     if not oes_parsed or not ep_parsed or "error" in oes_parsed or "error" in ep_parsed:
         error_msg = f"OES Error: {oes_parsed.get('error', 'N/A')}, EP Error: {ep_parsed.get('error', 'N/A')}"
