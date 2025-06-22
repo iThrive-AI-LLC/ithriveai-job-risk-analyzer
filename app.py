@@ -72,13 +72,12 @@ def keep_alive():
             if database_available and db_engine:
                 with db_engine.connect() as connection:
                     connection.execute(text("SELECT 1"))
-                st.session_state.last_keep_alive_ping = datetime.datetime.now(datetime.timezone.utc)
                 logger.info("Keep-alive: Database ping successful.")
             else:
                 logger.info("Keep-alive: Database not available, skipping ping.")
         except Exception as e:
             logger.error(f"Keep-alive: Database ping failed: {e}")
-            st.session_state.last_keep_alive_ping_error = str(e)
+
 
 
 # Start keep-alive thread only once
