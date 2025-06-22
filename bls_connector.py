@@ -213,15 +213,15 @@ def parse_oes_series_response(oes_response: Dict[str, Any], soc_code: str) -> Di
         parsed_data["messages"].extend(m for m in oes_response["message"] if m not in parsed_data["messages"])
 
     latest_year_found_overall = None
+    missing_series: List[str] = []  # Track series that return no usable data
 
     for series in oes_response.get("Results", {}).get("series", []):
         series_id = series.get("seriesID", "UnknownSeriesID")
         data_points = series.get("data", [])
         
         if not data_points:
-            msg = f"No data points returned for OES series ID: {series_id} (SOC: {soc_code})."
-            logger.warning(msg)
-            if msg not in parsed_data["messages"]: parsed_data["messages"].append(msg)
+            # Downgrade to debug to avoid log spam, collect for summary
+            missing_series.append(series_id)
             continue
             
         valid_data_points = [dp for dp in data_points if dp.get("year") and dp.get("value") and dp.get("value") != "-"] # BLS uses "-" for N/A
@@ -261,13 +261,17 @@ def parse_oes_series_response(oes_response: Dict[str, Any], soc_code: str) -> Di
     
     parsed_data["data_year"] = str(latest_year_found_overall) if latest_year_found_overall else None
 
-    if parsed_data["employment"] is None and parsed_data["median_wage"] is None:
-        msg = f"No employment or median wage data successfully parsed for OES SOC {soc_code}."
-        logger.warning(msg)
-        if msg not in parsed_data["messages"]: parsed_data["messages"].append(msg)
-        # Do not mark as error if some messages indicate series don't exist, as this is valid BLS behavior
-        if not any("Series does not exist" in m for m in parsed_data["messages"]):
-             parsed_data["status"] = "partial_error" # Indicates some data might be missing but not a total failure
+    # Post-loop consolidation of missing series information
+    if missing_series:
+        consolidated = (
+            f"{len(missing_series)} / {len(oes_response.get('Results', {}).get('series', []))} "
+            f"OES series returned no usable data for SOC {soc_code}: {', '.join(missing_series[:5])}"
+            f"{' …' if len(missing_series) > 5 else ''}"
+        )
+        parsed_data["messages"].append(consolidated)
+        # If *all* series are missing mark as no_data, else partial_error
+        parsed_data["status"] = "no_data" if parsed_data["employment"] is None and parsed_data["median_wage"] is None else "partial_error"
+        logger.info(consolidated)
 
     return parsed_data
 
@@ -371,16 +375,15 @@ def parse_ep_series_response(ep_response: Dict[str, Any], soc_code: str) -> Dict
 
     # EP data usually has one data point per series (the projection itself)
     # Base and projection years are often in catalog or need to be known from API documentation
-    
+    missing_series: List[str] = []
+
     for series in ep_response.get("Results", {}).get("series", []):
         series_id = series.get("seriesID", "UnknownSeriesID")
         data_points = series.get("data", [])
         catalog = series.get("catalog") # Catalog can contain years
 
         if not data_points:
-            msg = f"No data points returned for EP series ID: {series_id} (SOC: {soc_code})."
-            logger.warning(msg)
-            if msg not in parsed_data["messages"]: parsed_data["messages"].append(msg)
+            missing_series.append(series_id)
             continue
 
         # Typically, EP series data has one value representing the projection or base.
@@ -444,12 +447,23 @@ def parse_ep_series_response(ep_response: Dict[str, Any], soc_code: str) -> Dict
                 parsed_data["projection_year"] = catalog.get("endYear")
 
 
-    if not all(k is not None for k in ["current_employment", "projected_employment", "employment_change_percent", "annual_job_openings"]):
-        msg = f"Failed to parse some EP data for SOC {soc_code}. Check API messages."
-        logger.warning(msg + f" Parsed: {parsed_data}")
-        if msg not in parsed_data["messages"]: parsed_data["messages"].append(msg)
-        if not any("Series does not exist" in m for m in parsed_data["messages"]): # if not due to series non-existence
-             parsed_data["status"] = "partial_error"
+    # Summarise missing series after parsing
+    if missing_series:
+        consolidated = (
+            f"{len(missing_series)} / {len(ep_response.get('Results', {}).get('series', []))} "
+            f"EP series returned no usable data for SOC {soc_code}: {', '.join(missing_series[:5])}"
+            f"{' …' if len(missing_series) > 5 else ''}"
+        )
+        parsed_data["messages"].append(consolidated)
+        logger.info(consolidated)
+
+    # Determine overall status based on essential fields
+    essentials_ok = all(
+        parsed_data.get(k) is not None
+        for k in ["current_employment", "projected_employment", "employment_change_percent", "annual_job_openings"]
+    )
+    if not essentials_ok:
+        parsed_data["status"] = "partial_error" if parsed_data["status"] == "success" else parsed_data["status"]
 
 
     return parsed_data
