@@ -132,7 +132,9 @@ JOB_TITLE_TO_SOC: Dict[str, str] = {
     "kindergarten teachers, except special education": "25-2012",
     "elementary school teachers, except special education": "25-2021",
     "middle school teachers, except special and career/technical education": "25-2022",
-    "secondary school teachers, except special and career/technical education": "25-2031"
+    "secondary school teachers, except special and career/technical education": "25-2031",
+    # Added business teachers postsecondary
+    "business teachers, postsecondary": "25-1011"
 }
 
 SOC_TO_CATEGORY_STATIC: Dict[str, str] = {
@@ -306,7 +308,13 @@ def calculate_ai_risk_from_category(job_category: str, occupation_code: str) -> 
         "Sales and Related Occupations": {"base": 55, "inc": 8, "var": 6, "prot": ["Complex relationship-based sales", "High-value negotiation"]},
         "Production Occupations": {"base": 70, "inc": 5, "var": 4, "prot": ["Quality control oversight", "Machine maintenance and setup"]},
         "Transportation and Material Moving Occupations": {"base": 60, "inc": 9, "var": 5, "prot": ["Handling complex urban routes", "Last-mile delivery logistics"]},
-        "Default": {"base": 40, "inc": 6, "var": 5, "prot": ["Human creativity and adaptability", "Complex interpersonal skills"]}
+        "Default": {
+            "base": 40,
+            "inc": 6,
+            "var": 5,
+            "variance": 6,  # ensure key exists to avoid KeyError
+            "prot": ["Human creativity and adaptability", "Complex interpersonal skills"]
+        }
     }
     profile = profiles.get(job_category, profiles["Default"])
     
