@@ -19,7 +19,6 @@ import threading
 import pandas as pd
 import sqlalchemy
 from sqlalchemy import (
-    create_engine,
     text,
     Table,
     Column,
@@ -32,6 +31,15 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import SQLAlchemyError, IntegrityError
+
+# ------------------------------------------------------------------
+# Use the shared engine initialised in database.py instead of creating
+# a new one within this module.  This ensures all parts of the app
+# share the same connection-pool configuration and avoids duplicate
+# connections / conflicting settings.
+# ------------------------------------------------------------------
+
+import database  # provides the singleton `engine`
 
 # Attempt to import the custom BLS API connector
 try:
@@ -88,58 +96,16 @@ bls_job_data_table = Table(
     Column('last_updated', String(10), nullable=False, default=lambda: datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d'))
 )
 
-_engine_instance_global: Optional[sqlalchemy.engine.Engine] = None
-_engine_lock = threading.Lock()
-
 def get_db_engine(force_new: bool = False) -> Optional[sqlalchemy.engine.Engine]:
-    """Creates and returns a SQLAlchemy engine, ensuring singleton-like behavior for the global engine."""
-    global _engine_instance_global
-    with _engine_lock:
-        if _engine_instance_global is None or force_new:
-            database_url = os.environ.get('DATABASE_URL')
-            if not database_url:
-                try:
-                    import streamlit as st
-                    database_url = st.secrets.get("database", {}).get("DATABASE_URL")
-                except (ImportError, AttributeError):
-                    pass
+    """
+    Return the shared SQLAlchemy engine created in `database.py`.
+    The `force_new` argument is kept for backward-compatibility but
+    is ignored because engine creation is now centralised.
+    """
+    return database.engine
 
-            if not database_url:
-                logger.critical("DATABASE_URL environment variable or secret not set. Cannot connect to database.")
-                return None
-
-            if database_url.startswith('postgres://'):
-                database_url = database_url.replace('postgres://', 'postgresql://', 1)
-            if database_url.startswith(('http://', 'https://')):
-                parts = database_url.split('://', 1)
-                if len(parts) > 1: database_url = 'postgresql://' + parts[1]
-            
-            connect_args = {}
-            if 'postgresql' in database_url:
-                connect_args = {
-                    "connect_timeout": 15, "keepalives": 1, "keepalives_idle": 30,
-                    "keepalives_interval": 10, "keepalives_count": 5, "sslmode": 'require',
-                    "application_name": "AI_Job_Analyzer_Global_Engine"
-                }
-            try:
-                logger.info(f"Creating global database engine instance for URL: ...@{database_url.split('@')[-1] if '@' in database_url else database_url}")
-                _engine_instance_global = create_engine(
-                    database_url, connect_args=connect_args, pool_size=3, max_overflow=5,
-                    pool_timeout=20, pool_recycle=1800, pool_pre_ping=True, echo=False
-                )
-                with _engine_instance_global.connect() as conn:
-                    conn.execute(text("SELECT 1"))
-                logger.info("Global database engine instance created and connection tested successfully.")
-                # Create table if it doesn't exist using the global engine
-                metadata.create_all(_engine_instance_global, checkfirst=True)
-                logger.info("Ensured 'bls_job_data' table exists using global engine.")
-            except SQLAlchemyError as e:
-                logger.critical(f"Failed to create or connect with global database engine: {e}", exc_info=True)
-                _engine_instance_global = None
-    return _engine_instance_global
-
-# Initialize the global engine when the module loads
-engine = get_db_engine()
+# Use the shared engine for all local DB operations
+engine: Optional[sqlalchemy.engine.Engine] = database.engine
 
 
 # --- Static Mappings & Helper Functions ---
@@ -371,4 +337,38 @@ def get_job_titles_for_autocomplete() -> List[Dict[str, str]]:
     except SQLAlchemyError as e:
         logger.error(f"Failed to load job titles for autocomplete: {e}", exc_info=True)
     return []
+
+
+# ------------------------------------------------------------------
+# Legacy compatibility helper
+# ------------------------------------------------------------------
+# Older parts of the application import bls_job_mapper.get_complete_job_data.
+# The canonical implementation now lives in job_api_integration_database_only.
+# Re-export it here so existing imports continue to work without changes.
+# ------------------------------------------------------------------
+
+try:
+    from job_api_integration_database_only import get_complete_job_data as _get_complete_job_data  # type: ignore
+
+    def get_complete_job_data(job_title: str):
+        """Proxy to job_api_integration_database_only.get_complete_job_data."""
+        return _get_complete_job_data(job_title)
+
+    # expose for modules that imported symbol earlier
+    globals()["get_complete_job_data"] = get_complete_job_data
+except Exception as _exc:  # noqa: F841
+    # Fallback stub so caller receives a graceful error instead of AttributeError
+    def get_complete_job_data(job_title: str):
+        logger.error(
+            "job_api_integration_database_only.get_complete_job_data is unavailable. "
+            "Returning stub error response."
+        )
+        return {
+            "error": (
+                "System configuration error: get_complete_job_data implementation "
+                "is unavailable."
+            ),
+            "job_title": job_title,
+            "source": "bls_job_mapper_stub",
+        }
 
