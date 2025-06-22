@@ -398,33 +398,33 @@ with tabs[0]:
             
             st.markdown("<h3 style='color: #0084FF; font-size: 20px; margin-top: 20px;'>Key Insights</h3>", unsafe_allow_html=True)
             st.markdown(job_data.get("analysis", "Detailed analysis not available for this job title."))
-                # Get skill data safely from job_comparison module
-                import job_comparison
+            # Get skill data safely from job_comparison module
+            import job_comparison
 
-                # Provide defaults that are always present
-                default_skills = {
-                    'technical_skills': ['Data analysis', 'Industry knowledge', 'Computer proficiency'],
-                    'soft_skills': ['Communication', 'Problem-solving', 'Adaptability'],
-                    'emerging_skills': ['AI collaboration', 'Digital literacy', 'Remote work skills']
-                }
+            # Provide defaults that are always present
+            default_skills = {
+                'technical_skills': ['Data analysis', 'Industry knowledge', 'Computer proficiency'],
+                'soft_skills': ['Communication', 'Problem-solving', 'Adaptability'],
+                'emerging_skills': ['AI collaboration', 'Digital literacy', 'Remote work skills']
+            }
 
-                # Safely access JOB_SKILLS catalogue if it exists
-                skills_catalog = getattr(job_comparison, "JOB_SKILLS", {})
+            # Safely access JOB_SKILLS catalogue if it exists
+            skills_catalog = getattr(job_comparison, "JOB_SKILLS", {})
 
-                # Exact match first
-                if job_title in skills_catalog:
-                    skills = skills_catalog[job_title]
-                else:
-                    # Case-insensitive match fallback
-                    skills = None
-                    for skill_job, skill_data in skills_catalog.items():
-                        if job_title.lower() == skill_job.lower():
-                            skills = skill_data
-                            break
+            # Exact match first
+            if search_job_title in skills_catalog:
+                skills = skills_catalog[search_job_title]
+            else:
+                # Case-insensitive match fallback
+                skills = None
+                for skill_job, skill_data in skills_catalog.items():
+                    if search_job_title.lower() == skill_job.lower():
+                        skills = skill_data
+                        break
 
-                    # Final fallback to defaults
-                    if skills is None:
-                        skills = default_skills
+                # Final fallback to defaults
+                if skills is None:
+                    skills = default_skills
             st.markdown("<h3 style='color: #0084FF; font-size: 20px;'>Recent Job Searches</h3>", unsafe_allow_html=True)
             if get_recent_searches: # Check if function is available
                 recent_searches_data = get_recent_searches(limit=5)
