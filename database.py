@@ -415,3 +415,20 @@ if engine:
 
 logger.info(f"database.py loaded. Database available: {engine is not None and Session is not None}")
 print(f"database.py loaded. Database available: {engine is not None and Session is not None}")
+
+
+# ------------------------------------------------------------------
+# Back-compat helper
+# ------------------------------------------------------------------
+# A handful of legacy modules (e.g. older versions of admin dashboards)
+# still import `database.get_db_engine()` to obtain the shared SQLAlchemy
+# engine.  The current design exposes the singleton as the module-level
+# variable `engine`, but to avoid refactoring every caller we provide
+# this thin accessor that simply returns that instance (which may be
+# `None` if the connection failed or is not configured).
+# ------------------------------------------------------------------
+
+def get_db_engine() -> Optional[sqlalchemy.engine.Engine]:
+    """Return the singleton SQLAlchemy engine (may be ``None``)."""
+    return engine
+
