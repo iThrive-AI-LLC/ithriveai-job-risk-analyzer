@@ -36,6 +36,8 @@ from sqlalchemy.exc import SQLAlchemyError, IntegrityError
 # Attempt to import the custom BLS API connector
 try:
     import bls_connector
+    # Import the master list of SOC codes (≈800+) generated in soc_codes.py
+    from soc_codes import TARGET_SOC_CODES as _FULL_SOC_LIST
 except ImportError:
     logging.critical("bls_connector.py not found. This module is essential for fetching BLS data.")
     class bls_connector_stub: # type: ignore
@@ -175,40 +177,13 @@ SOC_TO_CATEGORY_STATIC: Dict[str, str] = {
     "53-": "Transportation and Material Moving Occupations"
 }
 
-TARGET_SOC_CODES: List[Tuple[str, str]] = [
-    ("11-1011", "Chief Executives"), ("11-2021", "Marketing Managers"),
-    ("11-3021", "Computer and Information Systems Managers"), ("11-9111", "Medical and Health Services Managers"),
-    ("13-1111", "Management Analysts"), ("13-2011", "Accountants and Auditors"),
-    ("13-2051", "Financial Analysts"), ("15-1211", "Computer Systems Analysts"),
-    ("15-1231", "Computer Network Support Specialists"), ("15-1244", "Network and Computer Systems Administrators"),
-    ("15-1251", "Computer Programmers"), ("15-1252", "Software Developers"),
-    ("15-1254", "Web Developers"), ("15-2051", "Data Scientists"),
-    ("17-2071", "Electrical Engineers"), ("17-2141", "Mechanical Engineers"),
-    ("19-1021", "Biochemists and Biophysicists"), ("21-1021", "Child, Family, and School Social Workers"),
-    ("23-1011", "Lawyers"), ("23-2011", "Paralegals and Legal Assistants"),
-    ("25-2021", "Elementary School Teachers, Except Special Education"),
-    ("25-2031", "Secondary School Teachers, Except Special and Career/Technical Education"),
-    ("25-4022", "Librarians and Media Collections Specialists"), ("27-1011", "Art Directors"),
-    ("27-1024", "Graphic Designers"), ("27-3023", "News Analysts, Reporters, and Journalists"),
-    ("27-3042", "Technical Writers"), ("27-4021", "Photographers"),
-    ("29-1021", "Dentists, General"), ("29-1062", "Family Medicine Physicians"),
-    ("29-1141", "Registered Nurses"), ("29-1292", "Dental Hygienists"),
-    ("31-1131", "Home Health Aides"), ("33-3051", "Police and Sheriff's Patrol Officers"),
-    ("35-1011", "Chefs and Head Cooks"), ("35-2014", "Cooks, Restaurant"),
-    ("35-3031", "Waiters and Waitresses"),
-    ("37-2011", "Janitors and Cleaners, Except Maids and Housekeeping Cleaners"),
-    ("39-5012", "Hairdressers, Hairstylists, and Cosmetologists"),
-    ("41-1011", "First-Line Supervisors of Retail Sales Workers"), ("41-2011", "Cashiers"),
-    ("41-2031", "Retail Salespersons"),
-    ("41-4012", "Sales Representatives, Wholesale and Manufacturing, Except Technical and Scientific Products"),
-    ("43-1011", "First-Line Supervisors of Office and Administrative Support Workers"),
-    ("43-4051", "Customer Service Representatives"),
-    ("43-6011", "Executive Secretaries and Executive Administrative Assistants"),
-    ("43-9021", "Data Entry Keyers"), ("47-2031", "Carpenters"),
-    ("47-2111", "Electricians"), ("49-3023", "Automotive Service Technicians and Mechanics"),
-    ("51-2092", "Team Assemblers"), ("53-3032", "Heavy and Tractor-Trailer Truck Drivers"),
-    ("53-7062", "Laborers and Freight, Stock, and Material Movers, Hand")
-]
+# ------------------------------------------------------------------
+# Use the comprehensive list from soc_codes.py for batch operations.
+# Keep the original variable name so the rest of the module/app
+# does not need to change.
+# ------------------------------------------------------------------
+TARGET_SOC_CODES: List[Tuple[str, str]] = _FULL_SOC_LIST
+
 
 def get_job_category(occupation_code: str) -> str:
     """Get the job category based on SOC code prefix."""
@@ -394,4 +369,3 @@ def get_job_titles_for_autocomplete() -> List[Dict[str, str]]:
     except SQLAlchemyError as e:
         logger.error(f"Failed to load job titles for autocomplete: {e}", exc_info=True)
     return []
-
