@@ -312,6 +312,42 @@ def construct_ep_series_ids(soc_code: str) -> List[str]:
     logger.info(f"Constructed EP series IDs for SOC {soc_code}: {series_ids}")
     return series_ids
 
+# --- EP Series ID Builder (for projections) ---
+def build_ep_series_id(soc_code: str) -> Dict[str, str]:
+    """
+    Return a dictionary of Employment Projections (EP) series IDs
+    for the given SOC code.  Keys correspond to the main EP metrics
+    we parse elsewhere in the codebase.
+
+    The EP series‐ID template (national, all-industry):
+        EPUU000000000{SOC}{DT}
+
+    Where:
+        SOC – 6-digit SOC code without dash
+        DT  – data-type code
+              01  employment (base-year)
+              02  employment (projection year)
+              03  employment change, numeric
+              04  employment change, percent
+              07  annual average openings
+    """
+    soc_part = soc_code.replace("-", "")
+    if not (len(soc_part) == 6 and soc_part.isdigit()):
+        logger.error(
+            f"Invalid SOC code format for EP series: {soc_code}. "
+            "Expected XX-XXXX or XXXXXX digits."
+        )
+        return {}
+
+    prefix = "EPUU000000000"
+    return {
+        "base_employment":        f"{prefix}{soc_part}01",
+        "proj_employment":        f"{prefix}{soc_part}02",
+        "employment_change_num":  f"{prefix}{soc_part}03",
+        "percent_change":         f"{prefix}{soc_part}04",
+        "annual_job_openings":    f"{prefix}{soc_part}07",
+    }
+
 def parse_ep_series_response(ep_response: Dict[str, Any], soc_code: str) -> Dict[str, Any]:
     """Parses raw EP API response into a structured dictionary."""
     parsed_data: Dict[str, Any] = {
