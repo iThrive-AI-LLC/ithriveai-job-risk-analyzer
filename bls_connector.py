@@ -296,28 +296,17 @@ def get_oes_data_for_soc(soc_code: str, api_key: Optional[str] = None) -> Dict[s
 # --- Employment Projections (EP) Data Functions ---
 def construct_ep_series_ids(soc_code: str) -> List[str]:
     """
-    Constructs EP series IDs for national employment projections.
-    Series ID Structure: EPU{AREA_CODE}{INDUSTRY_CODE}{OCCUPATION_CODE}{DATATYPE_CODE}
-    Area: UU00 (U.S. Total)
-    Industry: 000000 (Total, all industries)
-    Datatype: 01 (Employment), 02 (Employment change, numeric), 
-              03 (Employment change, percent), 07 (Occupational openings) 
-              (Note: BLS documentation sometimes uses 04 for openings, 07 is also seen)
+    Return the full list of national-projection EP series IDs for a
+    given SOC code, re-using the authoritative mapping produced by
+    ``build_ep_series_id``.  Centralising the pattern in one helper
+    avoids future drift that causes “Series does not exist” API
+    errors.
     """
-    soc_part = soc_code.replace("-", "")
-    if not (len(soc_part) == 6 and soc_part.isdigit()):
-        logger.error(f"Invalid SOC code format for EP series: {soc_code}. Expected XX-XXXX or XXXXXX (digits).")
+    ep_map = build_ep_series_id(soc_code)
+    if not ep_map:
         return []
 
-    # Using 'EPUU000000000' as prefix for US total, all industries.
-    # The last part is SOC code (6 digits) + data type (2 digits)
-    series_ids = [
-        f"EPUU000000000{soc_part}01",  # Employment base year
-        f"EPUU000000000{soc_part}02",  # Employment projected year (this is often how it's represented, or use 01 with different years)
-        f"EPUU000000000{soc_part}03",  # Employment change, numeric
-        f"EPUU000000000{soc_part}04",  # Employment change, percent
-        f"EPUU000000000{soc_part}07",  # Occupational openings, annual average
-    ]
+    series_ids = list(ep_map.values())
     logger.info(f"Constructed EP series IDs for SOC {soc_code}: {series_ids}")
     return series_ids
 
