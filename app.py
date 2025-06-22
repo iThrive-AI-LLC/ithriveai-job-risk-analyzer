@@ -542,10 +542,20 @@ with st.sidebar:
     # Database Status
     if database_available and db_engine:
         db_health = check_database_health() if check_database_health else {"status": "error", "message": "Health check function not available"}
-        if db_health.get("status") == "ok":
+
+        # `check_database_health` now returns a simple string ("OK", "Error", "Not Configured").
+        # Older fall-backs may still return a dictionary.  Handle both forms safely.
+        if isinstance(db_health, str):
+            ok_status = db_health.lower() == "ok"
+            msg = db_health
+        else:  # dict fallback
+            ok_status = str(db_health.get("status", "")).lower() == "ok"
+            msg = db_health.get("message", "Unknown")
+
+        if ok_status:
             st.markdown("Database: <span style='color:green;font-weight:bold;'>Connected</span>", unsafe_allow_html=True)
         else:
-            st.markdown(f"Database: <span style='color:red;font-weight:bold;'>Error ({db_health.get('message', 'Unknown')})</span>", unsafe_allow_html=True)
+            st.markdown(f"Database: <span style='color:red;font-weight:bold;'>Error ({msg})</span>", unsafe_allow_html=True)
     else:
         st.markdown("Database: <span style='color:orange;font-weight:bold;'>Not Connected (Fallback Mode)</span>", unsafe_allow_html=True)
 
