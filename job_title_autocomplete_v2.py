@@ -8,9 +8,10 @@ It includes features for search ranking and suggestion filtering.
 
 import os
 import streamlit as st
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from typing import List, Dict, Any
 import logging
+import database  # central database module exposing shared `engine`
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -26,40 +27,16 @@ def load_job_titles_from_db() -> List[Dict[str, Any]]:
         List of dictionaries, each with "display_title" and "soc_code".
         Returns an empty list if database connection fails or no titles are found.
     """
-    database_url = os.environ.get('DATABASE_URL')
-    if not database_url:
-        try:
-            database_url = st.secrets.get("database", {}).get("DATABASE_URL")
-        except Exception: # Handles cases where st.secrets might not be available (e.g. non-Streamlit context)
-            pass
+    # Use the shared SQLAlchemy engine initialised in `database.py`
+    engine = database.engine
 
-    if not database_url:
-        logger.error("DATABASE_URL environment variable or secret not set. Cannot load job titles.")
+    if engine is None:
+        logger.error("Shared database engine is not initialised. Cannot load job titles for autocomplete.")
         return []
     
     job_titles_list: List[Dict[str, Any]] = []
     
     try:
-        connect_args = {}
-        if 'postgresql' in database_url:
-            connect_args = {
-                "connect_timeout": 10, # Increased timeout
-                "keepalives": 1,
-                "keepalives_idle": 30,
-                "keepalives_interval": 10,
-                "keepalives_count": 5,
-                "sslmode": 'require'
-            }
-        
-        engine = create_engine(
-            database_url, 
-            connect_args=connect_args,
-            pool_size=3, # Smaller pool for autocomplete specific function
-            max_overflow=5,
-            pool_timeout=20,
-            pool_recycle=1800 
-        )
-        
         with engine.connect() as conn:
             # Fetch distinct job_title, standardized_title, and occupation_code
             # Prioritize standardized_title for display if it exists and is different from job_title,
