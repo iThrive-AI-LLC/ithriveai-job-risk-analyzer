@@ -133,8 +133,20 @@ def get_database_stats(engine):
 
 
 def render() -> None:
-    """Render the Admin Dashboard Streamlit UI."""
+    """Public entry-point used by the main application."""
+    _render_body()
 
+
+# ------------------------------------------------------------------ #
+#                ALL STREAMLIT-DRAWING CODE BELOW                    #
+#  (wrapped in _render_body so nothing executes on import)           #
+# ------------------------------------------------------------------ #
+
+def _render_body() -> None:
+    """Draw the full Admin-Dashboard UI.  **Must only be called from
+    `render()` or `__main__`, never at import time.**"""
+
+    # Top title
     st.title("⚙️ Admin Dashboard: BLS Data Management")
 
 if not MODULE_IMPORT_SUCCESS:
