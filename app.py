@@ -246,6 +246,22 @@ with tabs[0]:  # Single Job Analysis tab
             try:
                 # Get job data with optimized API calls
                 job_data = get_job_data(search_job_title)
+
+                # ------------------------------------------------------------------
+                # Derive missing job category if mapper returned the generic "General"
+                # but we do have a valid SOC code.  This improves titles such as
+                # “Teacher” / “Kindergarten Teachers, Except Special Education”.
+                # ------------------------------------------------------------------
+                from bls_job_mapper import get_job_category  # local import to avoid circulars
+
+                if (
+                    isinstance(job_data, dict)
+                    and job_data.get("job_category", "General") == "General"
+                    and job_data.get("occupation_code")
+                ):
+                    derived_cat = get_job_category(job_data["occupation_code"])
+                    if derived_cat:
+                        job_data["job_category"] = derived_cat
             except Exception as e:
                 # If job not found in database, show clear error message
                 if "not found in BLS database" in str(e):
