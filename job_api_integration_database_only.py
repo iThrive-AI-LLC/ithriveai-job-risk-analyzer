@@ -10,6 +10,8 @@ import logging
 import datetime # Added for employment trend year calculation
 from typing import Dict, Any, List, Optional
 
+# Use shared DB engine from the core database module
+import database
 # Attempt to import the core data provider module
 try:
     import bls_job_mapper
@@ -23,6 +25,118 @@ except ImportError as e:
     bls_job_mapper = bls_job_mapper_stub() # type: ignore
 
 logger = logging.getLogger(__name__)
+
+# ------------------------------------------------------------------
+# New helper – full data retrieval from BLS DB / API
+# This replicates the functionality that used to live in
+# bls_job_mapper.get_complete_job_data so that other modules
+# which still import that symbol (e.g. app_production.py) do
+# not break.  After we define the function, we monkey-patch it
+# into the bls_job_mapper namespace for backward compatibility.
+# ------------------------------------------------------------------
+
+def get_complete_job_data(job_title: str) -> Dict[str, Any]:
+    """
+    End-to-end pipeline that maps an arbitrary job title to an SOC code,
+    ensures BLS data is present in the Neon database (fetching from the
+    BLS API if necessary), and returns a consolidated dictionary that
+    includes BLS statistics plus AI-risk estimates.
+    """
+    try:
+        soc_code, standardized_title, job_category = bls_job_mapper.find_occupation_code(job_title)
+        if not soc_code:
+            return {
+                "error": f"No BLS SOC code could be mapped to '{job_title}'. "
+                         "Please try a more specific title.",
+                "job_title": job_title,
+                "source": "soc_mapping_failure"
+            }
+
+        # 1) Try cache / DB first
+        bls_row = bls_job_mapper.get_bls_data_from_db(soc_code)
+
+        # 2) If missing, attempt to fetch & persist
+        if bls_row is None:
+            db_eng = bls_job_mapper.get_db_engine()
+            if db_eng is None:
+                return {
+                    "error": "Database engine unavailable while attempting to fetch BLS data.",
+                    "job_title": job_title,
+                    "source": "db_engine_unavailable"
+                }
+            success, msg = bls_job_mapper.fetch_and_process_soc_data(soc_code,
+                                                                     standardized_title,
+                                                                     db_eng)
+            if not success:
+                return {
+                    "error": f"BLS API fetch failed for '{job_title}' (SOC {soc_code}). "
+                             f"Details: {msg}",
+                    "job_title": job_title,
+                    "source": "bls_api_failure"
+                }
+            bls_row = bls_job_mapper.get_bls_data_from_db(soc_code)
+
+        if bls_row is None:
+            return {
+                "error": f"No BLS data available after API attempt for '{job_title}'.",
+                "job_title": job_title,
+                "source": "bls_data_missing"
+            }
+
+        # 3) Derive AI-risk metrics
+        risk_info = bls_job_mapper.calculate_ai_risk_from_category(job_category, soc_code)
+
+        return {
+            # Core identifiers
+            "occupation_code": soc_code,
+            "job_title": standardized_title,
+            "job_category": job_category,
+            "source": "bls_database",
+
+            # Raw BLS stats (flatten a few key ones)
+            "employment": bls_row.get("current_employment"),
+            "projected_employment": bls_row.get("projected_employment"),
+            "employment_change_percent": bls_row.get("percent_change"),
+            "annual_job_openings": bls_row.get("annual_job_openings"),
+            "median_wage": bls_row.get("median_wage"),
+            "mean_wage": bls_row.get("mean_wage"),
+
+            # Risk outputs
+            "year_1_risk": risk_info.get("year_1_risk"),
+            "year_5_risk": risk_info.get("year_5_risk"),
+            "risk_category": risk_info.get("risk_category"),
+            "risk_factors": risk_info.get("risk_factors"),
+            "protective_factors": risk_info.get("protective_factors"),
+
+            # Simple narrative fields – could be enhanced later
+            "analysis": (
+                f"{standardized_title} – AI displacement risk is "
+                f"{risk_info.get('risk_category').lower()} at "
+                f"{risk_info.get('year_5_risk')} % over five years."
+            ),
+            "summary": (
+                f"{risk_info.get('year_5_risk')} % five-year AI risk "
+                f"({risk_info.get('risk_category')})."
+            ),
+
+            # Pass full raw row for downstream use
+            "bls_data": bls_row,
+            "last_updated": bls_row.get("last_updated")
+        }
+
+    except Exception as exc:
+        logger.exception("Unhandled error in get_complete_job_data")
+        return {
+            "error": f"System error when processing '{job_title}': {exc}",
+            "job_title": job_title,
+            "source": "system_exception"
+        }
+
+# Expose for legacy callers (e.g. app_production via bls_job_mapper)
+try:
+    setattr(bls_job_mapper, "get_complete_job_data", get_complete_job_data)
+except Exception:  # bls_job_mapper might be a stub in some failure modes
+    pass
 
 def generate_employment_trend(current_employment: Optional[int], projected_employment: Optional[int], num_years: int = 6) -> Dict[str, List[Any]]:
     """
@@ -96,22 +210,15 @@ def get_job_data(job_title: str) -> Dict[str, Any]:
     """
     logger.info(f"Fetching job data for: '{job_title}' using only authentic BLS sources via bls_job_mapper.")
 
-    database_url = os.environ.get('DATABASE_URL') # Or however secrets are managed
-    if not database_url:
-        # Attempt to get from streamlit secrets if in that environment
-        try:
-            import streamlit as st
-            database_url = st.secrets.get("database", {}).get("DATABASE_URL")
-        except (ImportError, AttributeError):
-            pass # Streamlit not available or secrets not configured
-        
-        if not database_url:
-            logger.error("DATABASE_URL environment variable or secret not set. Cannot connect to database.")
-            return {
-                "error": "Database configuration error. DATABASE_URL not set.",
-                "job_title": job_title,
-                "source": "system_error_db_config"
-            }
+    # Ensure we have an initialised engine; this avoids each module
+    # creating its own connection pool and keeps DB handling centralised.
+    if database.engine is None:
+        logger.error("Shared database engine is not initialised. Cannot fetch BLS data.")
+        return {
+            "error": "Database configuration error. Engine not initialised.",
+            "job_title": job_title,
+            "source": "system_error_db_config"
+        }
 
     try:
         # Delegate data fetching and core processing to bls_job_mapper
