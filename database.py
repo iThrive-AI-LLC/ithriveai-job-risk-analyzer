@@ -342,11 +342,21 @@ def get_recent_searches(limit: int = 10) -> List[Dict[str, Any]]:
 
 # --- New functions for health check and stats ---
 
-def check_database_health(engine_instance: Optional[sqlalchemy.engine.Engine]) -> str:
+# NOTE:  Several application modules call these helpers *without* passing
+# the engine argument (expecting the default singleton to be used).  Make
+# the parameter optional with a sensible fallback to avoid TypeErrors that
+# manifest as mysterious “X error” messages in the UI.
+
+def check_database_health(
+    engine_instance: Optional[sqlalchemy.engine.Engine] = None,
+) -> str:
     """
     Check the health of the database connection.
     """
-    if not engine_instance:
+    if engine_instance is None:
+        engine_instance = engine  # fall back to module-level singleton
+
+    if engine_instance is None:
         return "Not Configured"
 
     SessionLocal = sessionmaker(bind=engine_instance)
@@ -365,11 +375,16 @@ def check_database_health(engine_instance: Optional[sqlalchemy.engine.Engine]) -
         if session:
             session.close()
 
-def get_database_stats(engine_instance: Optional[sqlalchemy.engine.Engine]) -> Dict[str, Any]:
+def get_database_stats(
+    engine_instance: Optional[sqlalchemy.engine.Engine] = None,
+) -> Dict[str, Any]:
     """
     Get basic statistics from the bls_job_data table.
     """
-    if not engine_instance:
+    if engine_instance is None:
+        engine_instance = engine  # fall back to module-level singleton
+
+    if engine_instance is None:
         return {}
 
     SessionLocal = sessionmaker(bind=engine_instance)
