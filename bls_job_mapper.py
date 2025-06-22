@@ -127,7 +127,12 @@ JOB_TITLE_TO_SOC: Dict[str, str] = {
     "uber driver": "53-3054", "journalist": "27-3023", "reporter": "27-3023",
     "writer": "27-3042", "editor": "27-3041", "photographer": "27-4021",
     "court reporter": "23-2011", "stenographer": "23-2011", "digital court reporter": "23-2011",
-    "travel agent": "41-3041"
+    "travel agent": "41-3041",
+    # --- Added more-specific teacher titles ---
+    "kindergarten teachers, except special education": "25-2012",
+    "elementary school teachers, except special education": "25-2021",
+    "middle school teachers, except special and career/technical education": "25-2022",
+    "secondary school teachers, except special and career/technical education": "25-2031"
 }
 
 SOC_TO_CATEGORY_STATIC: Dict[str, str] = {
