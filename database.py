@@ -346,56 +346,59 @@ def check_database_health(engine_instance: Optional[sqlalchemy.engine.Engine]) -
     """
     Check the health of the database connection.
     """
-    if engine_instance is None:
-        logger.warning("Database health check: Engine not initialized.")
-        return "Engine not initialized"
+    if not engine_instance:
+        return "Not Configured"
+
+    SessionLocal = sessionmaker(bind=engine_instance)
+    session: Optional[SQLAlchemySession] = None
     try:
-        with engine_instance.connect() as connection:
-            connection.execute(text("SELECT 1"))
-        logger.info("Database health check: OK")
+        session = SessionLocal()
+        session.execute(text("SELECT 1"))
+        session.commit()                      # ensure transaction is closed
         return "OK"
     except Exception as e:
-        logger.error(f"Database health check failed: {str(e)}", exc_info=True)
-        return f"Error: {str(e)}"
+        logger.error(f"Database health check failed: {e}", exc_info=True)
+        if session:
+            session.rollback()
+        return "Error"
+    finally:
+        if session:
+            session.close()
 
 def get_database_stats(engine_instance: Optional[sqlalchemy.engine.Engine]) -> Dict[str, Any]:
     """
     Get basic statistics from the bls_job_data table.
     """
-    if engine_instance is None:
-        logger.warning("Get database stats: Engine not initialized.")
-        return {'total_soc_codes': 'N/A', 'latest_update_time': 'N/A'}
+    if not engine_instance:
+        return {}
 
-    stats = {'total_soc_codes': 'N/A', 'latest_update_time': 'N/A'}
+    SessionLocal = sessionmaker(bind=engine_instance)
+    session: Optional[SQLAlchemySession] = None
     try:
-        with engine_instance.connect() as connection:
-            # Query for total distinct SOC codes
-            soc_count_query = text("SELECT COUNT(DISTINCT occupation_code) FROM bls_job_data")
-            soc_result = connection.execute(soc_count_query).scalar_one_or_none()
-            if soc_result is not None:
-                stats['total_soc_codes'] = soc_result
-            else:
-                logger.warning("Could not retrieve total_soc_codes count from bls_job_data.")
+        session = SessionLocal()
 
-            # Query for the latest update time
-            # Assuming 'last_updated' is a string column in 'YYYY-MM-DD' format or a DATE/TIMESTAMP
-            last_updated_query = text("SELECT MAX(last_updated) FROM bls_job_data")
-            date_result = connection.execute(last_updated_query).scalar_one_or_none()
-            
-            if date_result is not None:
-                if isinstance(date_result, (datetime.date, datetime.datetime)):
-                    stats['latest_update_time'] = date_result.isoformat()
-                else: # Assume it's already a string
-                    stats['latest_update_time'] = str(date_result)
-            else:
-                logger.warning("Could not retrieve latest_update_time from bls_job_data.")
-        logger.info(f"Database stats retrieved: {stats}")
+        soc_count_query = text("SELECT COUNT(DISTINCT occupation_code) FROM bls_job_data")
+        total_socs = session.execute(soc_count_query).scalar_one_or_none() or 0
+
+        last_update_query = text("SELECT MAX(last_updated) FROM bls_job_data")
+        last_update = session.execute(last_update_query).scalar_one_or_none()
+
+        session.commit()
+        return {
+            "total_soc_codes": total_socs,
+            "latest_update_time": str(last_update) if last_update else "N/A"
+        }
     except Exception as e:
-        logger.error(f"Error getting database stats: {str(e)}", exc_info=True)
-        # Ensure N/A is returned for all keys on error
-        stats = {'total_soc_codes': 'N/A', 'latest_update_time': 'N/A'}
-        
-    return stats
+        logger.error(f"Failed to get database stats: {e}", exc_info=True)
+        if session:
+            session.rollback()
+        return {
+            "total_soc_codes": "Error",
+            "latest_update_time": "Error"
+        }
+    finally:
+        if session:
+            session.close()
 
 # --- Keep database schema updated ---
 # This is called when the module is first imported if engine is successfully created.
