@@ -594,6 +594,27 @@ def check_api_key_validity() -> bool:
         logger.info("BLS API key not available for validity check.")
         return False
 
+# ------------------------------------------------------------------ #
+# Back-compat helper – simple connectivity probe
+# ------------------------------------------------------------------ #
+
+def check_api_connectivity() -> bool:
+    """
+    Backward-compatibility wrapper used elsewhere in the codebase.
+
+    Performs a lightweight call to the BLS API (re-using
+    ``check_api_key_validity``) to confirm that:
+      1. An API key is configured
+      2. The BLS service is reachable with that key
+
+    Returns
+    -------
+    bool
+        ``True``  – the test request succeeded  
+        ``False`` – key missing / invalid or network/API error
+    """
+    return check_api_key_validity()
+
     # A very common and small series: National Unemployment Rate
     test_series_id = "LNS14000000" 
     current_year = str(datetime.datetime.now().year)
