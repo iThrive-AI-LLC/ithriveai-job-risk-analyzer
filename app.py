@@ -115,34 +115,37 @@ else:
 def check_admin_auth():
     """Check if user has admin privileges."""
     # Check for admin password in query params first
-    query_params = st.query_params
-    if query_params.get("admin") == "iThriveAI2024!":
-        return True
+    if hasattr(st, 'query_params'):
+        query_params = st.query_params
+        if query_params.get("admin") == "iThriveAI2024!":
+            st.session_state.admin_authenticated = True
+            return True
     
     # Check session state
     if st.session_state.get("admin_authenticated", False):
         return True
         
     # Check environment variable for admin mode
-    admin_mode = os.environ.get('ADMIN_MODE', 'false').lower() == 'true'
+    admin_mode = os.environ.get('ADMIN_MODE', '').lower() == 'true'
     if admin_mode:
+        st.session_state.admin_authenticated = True
         return True
         
     return False
 
 def admin_login_form():
     """Display admin login form."""
-    st.markdown("### Admin Access Required")
+    st.markdown("### 🔒 Admin Access Required")
     admin_password = st.text_input("Enter admin password:", type="password", key="admin_password_input")
     if st.button("Login as Admin", key="admin_login_button"):
         if admin_password == "iThriveAI2024!":
             st.session_state.admin_authenticated = True
-            st.success("Admin access granted!")
+            st.success("✅ Admin access granted!")
             st.rerun()
         else:
-            st.error("Invalid admin password.")
+            st.error("❌ Invalid admin password.")
     
-    st.markdown("*Admin access is required to view database management tools.*")
+    st.info("💡 Admin access is required to view database management tools.")
 
 # --- Auto-Import Manager ---
 import threading
@@ -318,13 +321,15 @@ class AutoImportManager:
         
         logger.info("Auto-import: Background loop ended")
 
-# Initialize the auto-import manager
+# Initialize the auto-import manager  
 if 'auto_import_manager' not in st.session_state:
     st.session_state.auto_import_manager = AutoImportManager()
 
-# Start auto-import if not already running and if admin authenticated
-if check_admin_auth() and not st.session_state.auto_import_manager.is_running:
+# ALWAYS start auto-import if database is available (not just for admins)
+if (database_available and bls_api_key and 
+    not st.session_state.auto_import_manager.is_running):
     st.session_state.auto_import_manager.start_auto_import()
+    logger.info("Auto-import started automatically on app load")
 
 # --- Health Check Endpoints ---
 query_params = st.query_params
@@ -741,12 +746,32 @@ with st.sidebar:
     st.markdown("4. Set monitoring interval to 5 minutes")
     st.markdown("5. Enable \"Alert When Down\"")
 
+    # Auto-Import Status for All Users
+    st.markdown("### 🔄 Data Import Status") 
+    if 'auto_import_manager' in st.session_state:
+        if st.session_state.auto_import_manager.is_running:
+            st.success("🟢 Background data updates: ACTIVE")
+            st.info("The system is automatically importing the latest job data.")
+        else:
+            st.warning("🟡 Background data updates: MONITORING")
+            
+        # Show basic progress without admin details
+        if st.session_state.admin_target_socs:
+            total_socs = len(st.session_state.admin_target_socs)
+            processed = st.session_state.get('admin_processed_count', 0)
+            if total_socs > 0:
+                pct = processed / total_socs
+                st.progress(pct, text=f"Database: {pct:.1%} complete")
+    else:
+        st.info("🔄 Data import system initializing...")
+
     if not bls_api_key:
         st.error("BLS API Key is not configured. Please set the BLS_API_KEY in Streamlit secrets or environment variables. The application cannot function without it.")
 
-    # Protected Admin Controls - only show to authenticated admins
+    # Admin Controls - Protected Section
     if check_admin_auth():
-        with st.expander("⚙️ ADMIN CONTROLS - Authenticated", expanded=False):
+        with st.expander("⚙️ ADMIN CONTROLS - Authenticated User", expanded=True):
+            st.success("🔓 You are logged in as an administrator")
             st.markdown("### Automatic Database Population Status")
             
             # Load current progress
@@ -850,9 +875,16 @@ with st.sidebar:
                             st.info("No recent import activity in the last 24 hours")
                 except Exception as e:
                     st.error(f"Error loading recent activity: {e}")
+                    
+            # Logout button
+            st.markdown("---")
+            if st.button("🚪 Logout", key="admin_logout"):
+                st.session_state.admin_authenticated = False
+                st.success("Logged out successfully")
+                st.rerun()
     else:
-        # Show login form for non-admin users
-        with st.expander("🔒 Admin Login Required", expanded=False):
+        # Show minimal admin section for regular users  
+        with st.expander("🔒 Admin Login", expanded=False):
             admin_login_form()
 
 # --- Application Footer ---
