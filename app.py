@@ -57,7 +57,7 @@ import job_api_integration_database_only as job_api_integration
 import simple_comparison
 import career_navigator
 import bls_job_mapper 
-from bls_job_mapper import TARGET_SOC_CODES, SOC_TO_CATEGORY_STATIC 
+from bls_job_mapper import TARGET_SOC_CODES 
 from job_title_autocomplete_v2 import job_title_autocomplete, load_job_titles_from_db
 from sqlalchemy import text 
 
@@ -110,6 +110,221 @@ if bls_api_key:
     logger.info("BLS API key loaded.")
 else:
     logger.error("BLS_API_KEY is not configured. App will rely on database and may have limited real-time data functionality.")
+
+# --- Admin Authentication ---
+def check_admin_auth():
+    """Check if user has admin privileges."""
+    # Check for admin password in query params first
+    query_params = st.query_params
+    if query_params.get("admin") == "iThriveAI2024!":
+        return True
+    
+    # Check session state
+    if st.session_state.get("admin_authenticated", False):
+        return True
+        
+    # Check environment variable for admin mode
+    admin_mode = os.environ.get('ADMIN_MODE', 'false').lower() == 'true'
+    if admin_mode:
+        return True
+        
+    return False
+
+def admin_login_form():
+    """Display admin login form."""
+    st.markdown("### Admin Access Required")
+    admin_password = st.text_input("Enter admin password:", type="password", key="admin_password_input")
+    if st.button("Login as Admin", key="admin_login_button"):
+        if admin_password == "iThriveAI2024!":
+            st.session_state.admin_authenticated = True
+            st.success("Admin access granted!")
+            st.rerun()
+        else:
+            st.error("Invalid admin password.")
+    
+    st.markdown("*Admin access is required to view database management tools.*")
+
+# --- Auto-Import Manager ---
+import threading
+import time
+from datetime import datetime, timedelta
+
+class AutoImportManager:
+    def __init__(self):
+        self.is_running = False
+        self.thread = None
+        self.last_run_date = None
+        self.daily_processed_count = 0
+        self.api_calls_today = 0
+        self.max_daily_calls = 400  # Conservative limit for BLS API
+        self.batch_size = 5
+        self.api_delay = 1.2  # Slightly longer delay for reliability
+        
+    def load_progress(self):
+        """Load progress from database or file."""
+        try:
+            if database_available and db_engine:
+                with db_engine.connect() as connection:
+                    result = connection.execute(text("""
+                        SELECT COUNT(*) as processed FROM bls_data 
+                        WHERE created_at IS NOT NULL
+                    """)).fetchone()
+                    if result:
+                        total_processed = result[0]
+                        # Update session state
+                        st.session_state.admin_processed_count = total_processed
+                        return total_processed
+        except Exception as e:
+            logger.error(f"Error loading progress: {e}")
+        return st.session_state.get('admin_processed_count', 0)
+    
+    def get_next_batch_to_process(self):
+        """Get the next batch of SOCs that need processing."""
+        try:
+            if database_available and db_engine:
+                with db_engine.connect() as connection:
+                    # Get SOCs that haven't been processed yet
+                    result = connection.execute(text("""
+                        SELECT soc_code FROM target_socs 
+                        WHERE soc_code NOT IN (
+                            SELECT DISTINCT occupation_code FROM bls_data 
+                            WHERE occupation_code IS NOT NULL
+                        ) 
+                        ORDER BY id 
+                        LIMIT :batch_size
+                    """), {'batch_size': self.batch_size}).fetchall()
+                    
+                    if result:
+                        return [row[0] for row in result]
+        except Exception as e:
+            logger.error(f"Error getting next batch: {e}")
+        
+        # Fallback to original method
+        target_socs = st.session_state.get('admin_target_socs', [])
+        current_index = st.session_state.get('admin_current_soc_index', 0)
+        end_index = min(current_index + self.batch_size, len(target_socs))
+        
+        batch = []
+        for i in range(current_index, end_index):
+            if i < len(target_socs):
+                soc_info = target_socs[i]
+                if isinstance(soc_info, tuple) and len(soc_info) >= 2:
+                    batch.append(soc_info[0])
+                elif isinstance(soc_info, dict) and "soc_code" in soc_info:
+                    batch.append(soc_info["soc_code"])
+        
+        return batch
+    
+    def process_batch_automatically(self):
+        """Process a batch automatically in the background."""
+        if not database_available or not bls_api_key:
+            logger.warning("Auto-import: Database or API key not available")
+            return False
+            
+        # Check daily limits
+        today = datetime.now().date()
+        if self.last_run_date != today:
+            self.api_calls_today = 0
+            self.last_run_date = today
+            
+        if self.api_calls_today >= self.max_daily_calls:
+            logger.info(f"Auto-import: Daily API limit reached ({self.api_calls_today})")
+            return False
+        
+        # Get next batch
+        soc_batch = self.get_next_batch_to_process()
+        if not soc_batch:
+            logger.info("Auto-import: No more SOCs to process")
+            return False
+        
+        processed_count = 0
+        for soc_code in soc_batch:
+            if self.api_calls_today >= self.max_daily_calls:
+                break
+                
+            try:
+                # Get job title for this SOC
+                job_title = self.get_job_title_for_soc(soc_code)
+                if job_title:
+                    success, message = bls_job_mapper.fetch_and_process_soc_data(
+                        soc_code, job_title, db_engine
+                    )
+                    
+                    if success:
+                        processed_count += 1
+                        self.api_calls_today += 1
+                        logger.info(f"Auto-import: Successfully processed {soc_code} - {job_title}")
+                    else:
+                        logger.warning(f"Auto-import: Failed to process {soc_code}: {message}")
+                
+                time.sleep(self.api_delay)  # Respect API rate limits
+                
+            except Exception as e:
+                logger.error(f"Auto-import: Exception processing {soc_code}: {e}")
+        
+        if processed_count > 0:
+            # Update progress
+            current_total = self.load_progress()
+            st.session_state.admin_processed_count = current_total
+            logger.info(f"Auto-import: Processed {processed_count} SOCs this batch. Total: {current_total}")
+        
+        return processed_count > 0
+    
+    def get_job_title_for_soc(self, soc_code):
+        """Get job title for a SOC code."""
+        target_socs = st.session_state.get('admin_target_socs', [])
+        for soc_info in target_socs:
+            if isinstance(soc_info, tuple) and len(soc_info) >= 2 and soc_info[0] == soc_code:
+                return soc_info[1]
+            elif isinstance(soc_info, dict) and soc_info.get("soc_code") == soc_code:
+                return soc_info.get("title", "Unknown")
+        return "Unknown"
+    
+    def start_auto_import(self):
+        """Start the automatic import process."""
+        if self.is_running:
+            return
+            
+        self.is_running = True
+        self.thread = threading.Thread(target=self.auto_import_loop, daemon=True)
+        self.thread.start()
+        logger.info("Auto-import: Background import started")
+    
+    def stop_auto_import(self):
+        """Stop the automatic import process."""
+        self.is_running = False
+        logger.info("Auto-import: Background import stopped")
+    
+    def auto_import_loop(self):
+        """Main loop for automatic importing."""
+        while self.is_running:
+            try:
+                # Run every 10 minutes
+                time.sleep(600)
+                
+                if not self.is_running:
+                    break
+                    
+                # Process a batch
+                success = self.process_batch_automatically()
+                
+                if not success:
+                    # If no progress made, wait longer before trying again
+                    time.sleep(3600)  # Wait 1 hour
+                    
+            except Exception as e:
+                logger.error(f"Auto-import loop error: {e}")
+                time.sleep(1800)  # Wait 30 minutes on error
+        
+        logger.info("Auto-import: Background loop ended")
+
+# Initialize the auto-import manager
+if 'auto_import_manager' not in st.session_state:
+    st.session_state.auto_import_manager = AutoImportManager()
+
+# Start auto-import if not already running and if admin authenticated
+if check_admin_auth() and not st.session_state.auto_import_manager.is_running:
+    st.session_state.auto_import_manager.start_auto_import()
 
 # --- Health Check Endpoints ---
 query_params = st.query_params
@@ -205,91 +420,8 @@ if not st.session_state.admin_target_socs:
         logger.error("Admin: TARGET_SOC_CODES not found in bls_job_mapper. Admin tool will be limited.")
         st.session_state.admin_target_socs = []
 
-# --- Admin Dashboard Logic ---
-def run_batch_processing(batch_size, api_delay):
-    processed_in_batch = 0
-    start_index = st.session_state.admin_current_soc_index
-    target_socs = st.session_state.admin_target_socs
-    
-    if not target_socs:
-        st.error("Admin: No target SOC codes loaded. Cannot run batch.")
-        st.session_state.admin_auto_run_batch = False
-        return
-
-    for i in range(start_index, min(start_index + batch_size, len(target_socs))):
-        if not st.session_state.admin_auto_run_batch: # Check if paused
-            logger.info("Admin: Batch processing paused by user.")
-            break 
-            
-        current_soc_info = target_socs[i]
-        
-        soc_code = None
-        job_title_for_api = None
-
-        if isinstance(current_soc_info, tuple) and len(current_soc_info) == 2:
-            soc_code = current_soc_info[0]
-            job_title_for_api = current_soc_info[1]
-            logger.info(f"Admin: Processing SOC tuple (Index {i}): {soc_code} - {job_title_for_api}")
-        elif isinstance(current_soc_info, dict) and "soc_code" in current_soc_info and "title" in current_soc_info:
-            soc_code = current_soc_info["soc_code"]
-            job_title_for_api = current_soc_info["title"]
-            logger.info(f"Admin: Processing SOC dict (Index {i}): {soc_code} - {job_title_for_api}")
-        else:
-            logger.error(f"Admin: Invalid structure for TARGET_SOC_CODES at index {i}: {current_soc_info}. Skipping.")
-            if {"soc_info": str(current_soc_info), "reason": "Invalid structure"} not in st.session_state.admin_failed_socs:
-                 st.session_state.admin_failed_socs.append({"soc_info": str(current_soc_info), "reason": "Invalid structure"})
-            st.session_state.admin_current_soc_index = i + 1 # Ensure progress
-            st.session_state.admin_processed_count +=1 
-            continue
-
-        if soc_code and job_title_for_api:
-            progress_bar.progress((st.session_state.admin_processed_count + 1) / len(target_socs) if target_socs else 0, text=f"Processing: {job_title_for_api} ({soc_code})")
-            status_message.info(f"Fetching and processing: {job_title_for_api} ({soc_code})...")
-            
-            try:
-                success, message = bls_job_mapper.fetch_and_process_soc_data(soc_code, job_title_for_api, db_engine)
-                if success:
-                    logger.info(f"Admin: Successfully processed {soc_code} - {job_title_for_api}")
-                    status_message.success(f"Successfully processed: {job_title_for_api} ({soc_code})")
-                else:
-                    logger.error(f"Admin: Failed to process {soc_code} - {job_title_for_api}: {message}")
-                    status_message.error(f"Failed: {job_title_for_api} ({soc_code}) - {message}")
-                    if {"soc_code": soc_code, "title": job_title_for_api, "reason": message} not in st.session_state.admin_failed_socs:
-                        st.session_state.admin_failed_socs.append({"soc_code": soc_code, "title": job_title_for_api, "reason": message})
-
-            except Exception as e:
-                logger.error(f"Admin: Exception processing {soc_code} - {job_title_for_api}: {str(e)}", exc_info=True)
-                status_message.error(f"Exception processing {job_title_for_api} ({soc_code}): {str(e)}")
-                if {"soc_code": soc_code, "title": job_title_for_api, "reason": str(e)} not in st.session_state.admin_failed_socs:
-                    st.session_state.admin_failed_socs.append({"soc_code": soc_code, "title": job_title_for_api, "reason": str(e)})
-            
-            st.session_state.admin_current_soc_index = i + 1
-            st.session_state.admin_processed_count += 1
-            processed_in_batch += 1
-            time.sleep(api_delay) # Respect API rate limits
-        else:
-            logger.warning(f"Admin: Skipped index {i} due to missing soc_code or job_title_for_api.")
-
-    if st.session_state.admin_current_soc_index >= len(target_socs):
-        status_message.success("All SOC codes processed!")
-        logger.info("Admin: All SOC codes processed.")
-        st.session_state.admin_auto_run_batch = False # Stop auto-run
-    elif not st.session_state.admin_auto_run_batch: # If paused by user
-        status_message.warning("Batch processing paused.")
-    
-    # Update overall progress display outside the loop
-    progress_bar.progress(st.session_state.admin_processed_count / len(target_socs) if target_socs else 0, text=f"Overall Progress: {st.session_state.admin_processed_count} / {len(target_socs)} SOCs processed.")
-    st.rerun() # Rerun to update UI elements
-
-# ------------------------------------------------------------------
-# --------------------  MAIN APPLICATION TABS  ---------------------
-# ------------------------------------------------------------------
-
-tabs = st.tabs(["Single Job Analysis", "Job Comparison", "Industry Risk Dashboard"])
-
-# ------------------------------------------------------------------
-# --------------------  SINGLE JOB ANALYSIS TAB --------------------
-# ------------------------------------------------------------------
+# --- Main Application Tabs ---
+tabs = st.tabs(["Single Job Analysis", "Job Comparison"])
 
 with tabs[0]:
     st.markdown("<h2 style='color: #0084FF;'>Analyze a Job</h2>", unsafe_allow_html=True)
@@ -401,11 +533,6 @@ with tabs[0]:
                     st.markdown("<div style='text-align: center;'><h4 style='color: #0084FF; font-size: 18px;'>5-Year Risk</h4></div>", unsafe_allow_html=True)
                     st.markdown(f"<div style='text-align: center; font-size: 20px; font-weight: bold;'>{year_5_risk if year_5_risk is not None else 0:.1f}%</div>", unsafe_allow_html=True)
             
-            # --------------- REGIONAL ANALYSIS PLACEHOLDER ---------------
-            st.markdown("<h3 style='color: #0084FF; font-size: 20px; margin-top: 25px;'>Regional Analysis (Beta)</h3>",
-                        unsafe_allow_html=True)
-            st.info("📍 Coming soon: Enter a ZIP code to view local AI-risk versus the national average.")
-
             with risk_factors_col:
                 st.markdown("<h3 style='color: #0084FF; font-size: 20px;'>Key Risk Factors</h3>", unsafe_allow_html=True)
                 risk_factors = job_data.get("risk_factors", ["Data unavailable"])
@@ -444,55 +571,6 @@ with tabs[0]:
                 # Final fallback to defaults
                 if skills is None:
                     skills = default_skills
-            # ----------  Skills visualisation  ----------
-            st.markdown("<h3 style='color: #0084FF; font-size: 20px;'>Key Skills Analysis</h3>", unsafe_allow_html=True)
-            skill_cols = st.columns(3)
-            with skill_cols[0]:
-                st.markdown("#### Technical")
-                for s in skills.get("technical_skills", []):
-                    st.markdown(f"🔧 {s}")
-            with skill_cols[1]:
-                st.markdown("#### Soft")
-                for s in skills.get("soft_skills", []):
-                    st.markdown(f"💬 {s}")
-            with skill_cols[2]:
-                st.markdown("#### Emerging")
-                for s in skills.get("emerging_skills", []):
-                    st.markdown(f"🚀 {s}")
-
-            # ----------  Career transition suggestions  ----------
-            st.markdown("<h3 style='color: #0084FF; font-size: 20px; margin-top: 25px;'>Career-Transition Ideas</h3>",
-                        unsafe_allow_html=True)
-            if callable(get_lowest_risk_jobs):
-                low_risk_jobs = get_lowest_risk_jobs(limit=3)
-                if low_risk_jobs:
-                    for j in low_risk_jobs:
-                        j_title = j.get("job_title", "Unknown")
-                        j_risk  = j.get("risk_category", "Low")
-                        st.markdown(f"✅ **{j_title}**  – _risk: {j_risk}_")
-                else:
-                    st.info("No alternative low-risk roles available yet.")
-            else:
-                st.info("Career suggestions not available (database fallback in use).")
-
-            # ----------  Export results ----------
-            export_payload = {
-                "job_title": search_job_title,
-                "analysis_time": datetime.datetime.utcnow().isoformat(),
-                "risk": {
-                    "one_year": job_data.get("year_1_risk"),
-                    "five_year": job_data.get("year_5_risk"),
-                    "category": job_data.get("risk_category"),
-                },
-                "skills": skills,
-                "bls": job_data.get("projections", {})
-            }
-            st.download_button("⬇️ Download analysis (JSON)",
-                               data=json.dumps(export_payload, indent=2),
-                               file_name=f"{search_job_title.replace(' ','_')}_analysis.json",
-                               mime="application/json")
-
-            # ----------  Recent searches ----------
             st.markdown("<h3 style='color: #0084FF; font-size: 20px;'>Recent Job Searches</h3>", unsafe_allow_html=True)
             if get_recent_searches: # Check if function is available
                 recent_searches_data = get_recent_searches(limit=5)
@@ -534,10 +612,6 @@ with tabs[0]:
                 else:
                     st.info("No recent searches yet.")
 
-# ------------------------------------------------------------------
-# --------------------  JOB COMPARISON TAB -------------------------
-# ------------------------------------------------------------------
-
 with tabs[1]:
     st.markdown("<h2 style='color: #0084FF;'>Compare Jobs</h2>", unsafe_allow_html=True)
     st.markdown("Compare the AI displacement risk for multiple jobs side by side. Add up to 5 jobs.")
@@ -577,10 +651,8 @@ with tabs[1]:
             st.rerun()
 
     if st.session_state.compare_jobs_list:
-        with st.spinner("Fetching comparison data, please wait..."):
-            comparison_job_data = simple_comparison.get_job_comparison_data(
-                st.session_state.compare_jobs_list
-            )
+        with st.spinner("Fetching comparison data..."):
+            comparison_job_data = simple_comparison.get_job_comparison_data(st.session_state.compare_jobs_list)
         
         if comparison_job_data and not all("error" in data for data in comparison_job_data.values()):
             comp_tabs = st.tabs(["Comparison Chart", "Detailed Table", "Risk Heatmap", "Radar Analysis"])
@@ -602,84 +674,6 @@ with tabs[1]:
                 else: st.info("Not enough data to create radar chart.")
         else:
             st.error("Could not retrieve enough data for comparison. Please ensure job titles are valid or try different ones.")
-
-# ------------------------------------------------------------------
-# --------------------  INDUSTRY RISK DASHBOARD  -------------------
-# ------------------------------------------------------------------
-
-with tabs[2]:
-    st.markdown("<h2 style='color: #0084FF;'>Industry Risk Dashboard</h2>", unsafe_allow_html=True)
-    st.markdown("Aggregate view of AI displacement risk and growth trends by industry category.")
-
-    @st.cache_data(ttl=3600)
-    def _get_industry_aggregate() -> pd.DataFrame:
-        """Return dataframe with industry level aggregates: avg 5-year risk & growth."""
-        categories = {v for v in SOC_TO_CATEGORY_STATIC.values()}
-        records = []
-
-        if database_available and db_engine:
-            try:
-                df_db = pd.read_sql("SELECT occupation_code, percent_change, job_category \
-                                     FROM bls_job_data", db_engine)
-            except Exception as e:
-                logger.warning(f"Industry dashboard DB query failed: {e}")
-                df_db = pd.DataFrame()
-        else:
-            df_db = pd.DataFrame()
-
-        for cat in sorted(categories):
-            # Estimate risk using bls_job_mapper profiles
-            profile = bls_job_mapper.calculate_ai_risk_from_category(cat, "00-0000")
-            avg_risk = profile.get("year_5_risk", 50)
-
-            # Growth from DB if available
-            if not df_db.empty:
-                subset = df_db[df_db["job_category"] == cat]
-                growth = subset["percent_change"].mean() if not subset.empty else None
-            else:
-                growth = None
-
-            records.append({
-                "Industry": cat,
-                "Avg 5-Year AI Risk (%)": round(avg_risk, 1),
-                "Avg 10-Year Growth (%)": round(growth, 1) if growth is not None else None
-            })
-        df_ind = pd.DataFrame(records).sort_values("Avg 5-Year AI Risk (%)", ascending=False)
-        return df_ind
-
-    df_industry = _get_industry_aggregate()
-
-    col_risk, col_growth = st.columns(2)
-    with col_risk:
-        st.subheader("Risk Ranking")
-        fig_risk = go.Figure(go.Bar(
-            x=df_industry["Avg 5-Year AI Risk (%)"],
-            y=df_industry["Industry"],
-            orientation='h',
-            marker_color='#FF8C42'
-        ))
-        fig_risk.update_layout(height=600, yaxis={'categoryorder':'total ascending'},
-                               margin=dict(l=150, r=20, t=40, b=20))
-        st.plotly_chart(fig_risk, use_container_width=True)
-
-    with col_growth:
-        st.subheader("Projected Growth")
-        df_growth = df_industry.dropna(subset=["Avg 10-Year Growth (%)"])
-        if not df_growth.empty:
-            fig_growth = go.Figure(go.Bar(
-                x=df_growth["Avg 10-Year Growth (%)"],
-                y=df_growth["Industry"],
-                orientation='h',
-                marker_color='#63A4FF'
-            ))
-            fig_growth.update_layout(height=600, yaxis={'categoryorder':'total ascending'},
-                                     margin=dict(l=150, r=20, t=40, b=20))
-            st.plotly_chart(fig_growth, use_container_width=True)
-        else:
-            st.info("Growth data unavailable for industries (populate database to enable).")
-
-    st.subheader("Industry Aggregate Table")
-    st.dataframe(df_industry, use_container_width=True)
 
 # --- Admin Controls Expander ---
 with st.sidebar:
@@ -750,56 +744,116 @@ with st.sidebar:
     if not bls_api_key:
         st.error("BLS API Key is not configured. Please set the BLS_API_KEY in Streamlit secrets or environment variables. The application cannot function without it.")
 
-    with st.expander("⚙️ ADMIN CONTROLS - Click to Expand", expanded=False):
-        st.markdown("This section is for administrators only and provides tools for database management.")
-        st.markdown("### Simplified Admin: Database Population Tool")
-
-        total_socs = len(st.session_state.admin_target_socs) if st.session_state.admin_target_socs else 0
-        
-        # Progress bar for overall progress
-        progress_bar = st.progress(st.session_state.admin_processed_count / total_socs if total_socs > 0 else 0)
-        progress_bar.progress(st.session_state.admin_processed_count / total_socs if total_socs > 0 else 0, text=f"Overall Progress: {st.session_state.admin_processed_count} / {total_socs} SOCs processed. Next: Index {st.session_state.admin_current_soc_index}")
-
-        # Status message placeholder
-        status_message = st.empty()
-
-        col_admin1, col_admin2 = st.columns(2)
-        with col_admin1:
-            admin_batch_size = st.number_input("Batch Size (SOCs per run)", min_value=1, max_value=50, value=5, step=1)
-        with col_admin2:
-            admin_api_delay = st.number_input("Delay Between API Calls (seconds)", min_value=0.1, max_value=5.0, value=1.0, step=0.1)
-
-        # Admin action buttons
-        if st.button("▶️ Start/Resume Batch", key="admin_start_resume"):
-            st.session_state.admin_auto_run_batch = True
-            logger.info(f"Admin: Start/Resume batch processing. Current index: {st.session_state.admin_current_soc_index}")
-            status_message.info(f"Starting batch processing from index {st.session_state.admin_current_soc_index}...")
-            run_batch_processing(admin_batch_size, admin_api_delay)
-            st.rerun()
-
-        if st.button("⏸️ Pause (Stop Auto-Run)", key="admin_pause"):
-            st.session_state.admin_auto_run_batch = False
-            logger.info("Admin: Batch processing paused by user.")
-            status_message.warning("Batch processing paused.")
-            st.rerun()
-
-        if st.button("🔄 Reset All Progress", key="admin_reset_progress"):
-            st.session_state.admin_current_soc_index = 0
-            st.session_state.admin_processed_count = 0
-            st.session_state.admin_failed_socs = []
-            st.session_state.admin_auto_run_batch = False
-            logger.info("Admin: All progress reset.")
-            status_message.success("All progress has been reset.")
-            st.rerun()
-        
-        # Display failed SOCs
-        st.markdown("***")
-        st.markdown("### Summary of Failed SOC Populations")
-        if st.session_state.admin_failed_socs:
-            failed_df = pd.DataFrame(st.session_state.admin_failed_socs)
-            st.dataframe(failed_df, use_container_width=True)
-        else:
-            st.info("No SOC codes are currently marked as having failed population.")
+    # Protected Admin Controls - only show to authenticated admins
+    if check_admin_auth():
+        with st.expander("⚙️ ADMIN CONTROLS - Authenticated", expanded=False):
+            st.markdown("### Automatic Database Population Status")
+            
+            # Load current progress
+            total_processed = st.session_state.auto_import_manager.load_progress()
+            total_socs = len(st.session_state.admin_target_socs) if st.session_state.admin_target_socs else 0
+            
+            # Progress display
+            if total_socs > 0:
+                progress_pct = total_processed / total_socs
+                st.progress(progress_pct, text=f"Progress: {total_processed:,} / {total_socs:,} SOCs processed ({progress_pct:.1%})")
+            else:
+                st.info("Target SOCs list not loaded")
+            
+            # Status indicators
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                if st.session_state.auto_import_manager.is_running:
+                    st.success("🟢 Auto-Import: ACTIVE")
+                else:
+                    st.error("🔴 Auto-Import: STOPPED")
+            
+            with col2:
+                api_calls = st.session_state.auto_import_manager.api_calls_today
+                max_calls = st.session_state.auto_import_manager.max_daily_calls
+                if api_calls < max_calls:
+                    st.success(f"📊 API Calls: {api_calls}/{max_calls}")
+                else:
+                    st.warning(f"⚠️ Daily Limit Reached: {api_calls}/{max_calls}")
+            
+            with col3:
+                next_batch = st.session_state.auto_import_manager.get_next_batch_to_process()
+                remaining = len(next_batch) if next_batch else 0
+                if remaining > 0:
+                    st.info(f"⏳ Next Batch: {remaining} SOCs")
+                else:
+                    st.success("✅ All SOCs Processed!")
+            
+            # Manual controls
+            st.markdown("### Manual Controls")
+            col_btn1, col_btn2, col_btn3 = st.columns(3)
+            
+            with col_btn1:
+                if st.button("🚀 Force Process Batch", key="force_batch"):
+                    with st.spinner("Processing batch..."):
+                        success = st.session_state.auto_import_manager.process_batch_automatically()
+                        if success:
+                            st.success("Batch processed successfully!")
+                        else:
+                            st.warning("No items to process or daily limit reached")
+                        st.rerun()
+            
+            with col_btn2:
+                if st.session_state.auto_import_manager.is_running:
+                    if st.button("⏸️ Stop Auto-Import", key="stop_auto"):
+                        st.session_state.auto_import_manager.stop_auto_import()
+                        st.info("Auto-import stopped")
+                        st.rerun()
+                else:
+                    if st.button("▶️ Start Auto-Import", key="start_auto"):
+                        st.session_state.auto_import_manager.start_auto_import()
+                        st.success("Auto-import started")
+                        st.rerun()
+            
+            with col_btn3:
+                if st.button("📊 Refresh Stats", key="refresh_stats"):
+                    st.rerun()
+            
+            # Settings
+            st.markdown("### Import Settings")
+            col_set1, col_set2 = st.columns(2)
+            with col_set1:
+                new_batch_size = st.number_input("Batch Size", min_value=1, max_value=20, 
+                                               value=st.session_state.auto_import_manager.batch_size)
+                if new_batch_size != st.session_state.auto_import_manager.batch_size:
+                    st.session_state.auto_import_manager.batch_size = new_batch_size
+            
+            with col_set2:
+                new_delay = st.number_input("API Delay (seconds)", min_value=0.5, max_value=5.0, 
+                                          value=st.session_state.auto_import_manager.api_delay, step=0.1)
+                if new_delay != st.session_state.auto_import_manager.api_delay:
+                    st.session_state.auto_import_manager.api_delay = new_delay
+            
+            # Recent activity log
+            if database_available:
+                st.markdown("### Recent Import Activity")
+                try:
+                    with db_engine.connect() as connection:
+                        recent_imports = connection.execute(text("""
+                            SELECT occupation_code, job_title, created_at 
+                            FROM bls_data 
+                            WHERE created_at >= NOW() - INTERVAL '24 hours'
+                            ORDER BY created_at DESC 
+                            LIMIT 10
+                        """)).fetchall()
+                        
+                        if recent_imports:
+                            for row in recent_imports:
+                                soc_code, job_title, created_at = row
+                                st.text(f"{created_at}: {soc_code} - {job_title}")
+                        else:
+                            st.info("No recent import activity in the last 24 hours")
+                except Exception as e:
+                    st.error(f"Error loading recent activity: {e}")
+    else:
+        # Show login form for non-admin users
+        with st.expander("🔒 Admin Login Required", expanded=False):
+            admin_login_form()
 
 # --- Application Footer ---
 st.markdown("<hr style='margin-top: 40px; margin-bottom: 20px;'>", unsafe_allow_html=True)
