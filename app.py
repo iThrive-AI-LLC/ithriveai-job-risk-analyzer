@@ -147,74 +147,175 @@ def admin_login_form():
     
     st.info("💡 Admin access is required to view database management tools.")
 
-# --- Auto-Import Manager ---
+# --- Enhanced Auto-Import Manager ---
 import threading
 import time
+import json
+import os
 from datetime import datetime, timedelta
 
-class AutoImportManager:
+class PersistentAutoImportManager:
     def __init__(self):
         self.is_running = False
         self.thread = None
-        self.last_run_date = None
-        self.daily_processed_count = 0
-        self.api_calls_today = 0
-        self.max_daily_calls = 400  # Conservative limit for BLS API
-        self.batch_size = 5
-        self.api_delay = 1.2  # Slightly longer delay for reliability
+        self.progress_file = "import_progress.json"
+        self.settings_file = "import_settings.json"
         
+        # Load persistent progress and settings
+        self.load_progress()
+        self.load_settings()
+        
+        # Start automatically on initialization
+        self.start_auto_import()
+        
+    def load_settings(self):
+        """Load import settings from file."""
+        try:
+            if os.path.exists(self.settings_file):
+                with open(self.settings_file, 'r') as f:
+                    settings = json.load(f)
+                    self.max_daily_calls = settings.get('max_daily_calls', 400)
+                    self.batch_size = settings.get('batch_size', 3)
+                    self.api_delay = settings.get('api_delay', 2.0)
+            else:
+                # Default settings
+                self.max_daily_calls = 400
+                self.batch_size = 3
+                self.api_delay = 2.0
+                self.save_settings()
+        except Exception as e:
+            logger.error(f"Error loading settings: {e}")
+            # Use defaults
+            self.max_daily_calls = 400
+            self.batch_size = 3
+            self.api_delay = 2.0
+    
+    def save_settings(self):
+        """Save import settings to file."""
+        try:
+            settings = {
+                'max_daily_calls': self.max_daily_calls,
+                'batch_size': self.batch_size,
+                'api_delay': self.api_delay
+            }
+            with open(self.settings_file, 'w') as f:
+                json.dump(settings, f)
+        except Exception as e:
+            logger.error(f"Error saving settings: {e}")
+    
     def load_progress(self):
-        """Load progress from database or file."""
+        """Load persistent progress from file."""
+        try:
+            if os.path.exists(self.progress_file):
+                with open(self.progress_file, 'r') as f:
+                    progress_data = json.load(f)
+                    self.current_soc_index = progress_data.get('current_soc_index', 0)
+                    self.processed_count = progress_data.get('processed_count', 0)
+                    self.failed_socs = progress_data.get('failed_socs', [])
+                    self.last_run_date = progress_data.get('last_run_date')
+                    self.api_calls_today = progress_data.get('api_calls_today', 0)
+                    
+                    # Reset daily counter if it's a new day
+                    today = datetime.now().date().isoformat()
+                    if self.last_run_date != today:
+                        self.api_calls_today = 0
+                        self.last_run_date = today
+                        
+                    logger.info(f"Loaded progress: {self.processed_count} processed, index {self.current_soc_index}")
+            else:
+                # First time - initialize
+                self.current_soc_index = 0
+                self.processed_count = 0
+                self.failed_socs = []
+                self.last_run_date = datetime.now().date().isoformat()
+                self.api_calls_today = 0
+                self.save_progress()
+        except Exception as e:
+            logger.error(f"Error loading progress: {e}")
+            # Initialize with defaults
+            self.current_soc_index = 0
+            self.processed_count = 0
+            self.failed_socs = []
+            self.last_run_date = datetime.now().date().isoformat()
+            self.api_calls_today = 0
+    
+    def save_progress(self):
+        """Save persistent progress to file."""
+        try:
+            progress_data = {
+                'current_soc_index': self.current_soc_index,
+                'processed_count': self.processed_count,
+                'failed_socs': self.failed_socs,
+                'last_run_date': self.last_run_date,
+                'api_calls_today': self.api_calls_today,
+                'last_updated': datetime.now().isoformat()
+            }
+            with open(self.progress_file, 'w') as f:
+                json.dump(progress_data, f, indent=2)
+                
+            # Also update session state for UI
+            st.session_state.admin_processed_count = self.processed_count
+            st.session_state.admin_current_soc_index = self.current_soc_index
+            st.session_state.admin_failed_socs = self.failed_socs
+            
+        except Exception as e:
+            logger.error(f"Error saving progress: {e}")
+    
+    def get_total_socs(self):
+        """Get total number of SOCs to process."""
         try:
             if database_available and db_engine:
                 with db_engine.connect() as connection:
-                    result = connection.execute(text("""
-                        SELECT COUNT(*) as processed FROM bls_data 
-                        WHERE created_at IS NOT NULL
-                    """)).fetchone()
+                    result = connection.execute(text("SELECT COUNT(*) FROM target_socs")).fetchone()
                     if result:
-                        total_processed = result[0]
-                        # Update session state
-                        st.session_state.admin_processed_count = total_processed
-                        return total_processed
-        except Exception as e:
-            logger.error(f"Error loading progress: {e}")
-        return st.session_state.get('admin_processed_count', 0)
+                        return result[0]
+        except Exception:
+            pass
+        
+        # Fallback to session state
+        target_socs = st.session_state.get('admin_target_socs', [])
+        return len(target_socs)
     
     def get_next_batch_to_process(self):
         """Get the next batch of SOCs that need processing."""
         try:
             if database_available and db_engine:
                 with db_engine.connect() as connection:
-                    # Get SOCs that haven't been processed yet
+                    # Get SOCs that haven't been processed yet, starting from current index
                     result = connection.execute(text("""
-                        SELECT soc_code FROM target_socs 
-                        WHERE soc_code NOT IN (
+                        SELECT soc_code, title FROM target_socs 
+                        WHERE id > :current_index
+                        AND soc_code NOT IN (
                             SELECT DISTINCT occupation_code FROM bls_data 
                             WHERE occupation_code IS NOT NULL
                         ) 
                         ORDER BY id 
                         LIMIT :batch_size
-                    """), {'batch_size': self.batch_size}).fetchall()
+                    """), {
+                        'current_index': self.current_soc_index,
+                        'batch_size': self.batch_size
+                    }).fetchall()
                     
                     if result:
-                        return [row[0] for row in result]
+                        return [(row[0], row[1]) for row in result]
         except Exception as e:
-            logger.error(f"Error getting next batch: {e}")
+            logger.error(f"Error getting next batch from database: {e}")
         
-        # Fallback to original method
+        # Fallback to session state method
         target_socs = st.session_state.get('admin_target_socs', [])
-        current_index = st.session_state.get('admin_current_soc_index', 0)
-        end_index = min(current_index + self.batch_size, len(target_socs))
-        
+        if self.current_soc_index >= len(target_socs):
+            return []
+            
+        end_index = min(self.current_soc_index + self.batch_size, len(target_socs))
         batch = []
-        for i in range(current_index, end_index):
+        
+        for i in range(self.current_soc_index, end_index):
             if i < len(target_socs):
                 soc_info = target_socs[i]
                 if isinstance(soc_info, tuple) and len(soc_info) >= 2:
-                    batch.append(soc_info[0])
-                elif isinstance(soc_info, dict) and "soc_code" in soc_info:
-                    batch.append(soc_info["soc_code"])
+                    batch.append((soc_info[0], soc_info[1]))
+                elif isinstance(soc_info, dict):
+                    batch.append((soc_info.get("soc_code"), soc_info.get("title", "Unknown")))
         
         return batch
     
@@ -225,63 +326,71 @@ class AutoImportManager:
             return False
             
         # Check daily limits
-        today = datetime.now().date()
+        today = datetime.now().date().isoformat()
         if self.last_run_date != today:
             self.api_calls_today = 0
             self.last_run_date = today
+            logger.info("Auto-import: New day, resetting API call counter")
             
         if self.api_calls_today >= self.max_daily_calls:
-            logger.info(f"Auto-import: Daily API limit reached ({self.api_calls_today})")
+            logger.info(f"Auto-import: Daily API limit reached ({self.api_calls_today}/{self.max_daily_calls})")
             return False
         
         # Get next batch
         soc_batch = self.get_next_batch_to_process()
         if not soc_batch:
-            logger.info("Auto-import: No more SOCs to process")
+            logger.info("Auto-import: No more SOCs to process - import complete!")
             return False
         
         processed_count = 0
-        for soc_code in soc_batch:
+        for soc_code, job_title in soc_batch:
             if self.api_calls_today >= self.max_daily_calls:
+                logger.info("Auto-import: Hit daily limit during batch processing")
                 break
                 
             try:
-                # Get job title for this SOC
-                job_title = self.get_job_title_for_soc(soc_code)
-                if job_title:
-                    success, message = bls_job_mapper.fetch_and_process_soc_data(
-                        soc_code, job_title, db_engine
-                    )
-                    
-                    if success:
-                        processed_count += 1
-                        self.api_calls_today += 1
-                        logger.info(f"Auto-import: Successfully processed {soc_code} - {job_title}")
-                    else:
-                        logger.warning(f"Auto-import: Failed to process {soc_code}: {message}")
+                logger.info(f"Auto-import: Processing {soc_code} - {job_title}")
+                success, message = bls_job_mapper.fetch_and_process_soc_data(
+                    soc_code, job_title, db_engine
+                )
                 
-                time.sleep(self.api_delay)  # Respect API rate limits
+                if success:
+                    processed_count += 1
+                    self.processed_count += 1
+                    self.api_calls_today += 1
+                    self.current_soc_index += 1
+                    logger.info(f"Auto-import: Successfully processed {soc_code} ({self.processed_count} total)")
+                else:
+                    logger.warning(f"Auto-import: Failed to process {soc_code}: {message}")
+                    self.failed_socs.append({
+                        "soc_code": soc_code,
+                        "title": job_title,
+                        "reason": message,
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    self.current_soc_index += 1
+                
+                # Save progress after each successful processing
+                self.save_progress()
+                
+                # Respect API rate limits
+                time.sleep(self.api_delay)
                 
             except Exception as e:
                 logger.error(f"Auto-import: Exception processing {soc_code}: {e}")
+                self.failed_socs.append({
+                    "soc_code": soc_code,
+                    "title": job_title,
+                    "reason": str(e),
+                    "timestamp": datetime.now().isoformat()
+                })
+                self.current_soc_index += 1
+                self.save_progress()
         
         if processed_count > 0:
-            # Update progress
-            current_total = self.load_progress()
-            st.session_state.admin_processed_count = current_total
-            logger.info(f"Auto-import: Processed {processed_count} SOCs this batch. Total: {current_total}")
+            logger.info(f"Auto-import: Processed {processed_count} SOCs this batch. Total: {self.processed_count}")
         
         return processed_count > 0
-    
-    def get_job_title_for_soc(self, soc_code):
-        """Get job title for a SOC code."""
-        target_socs = st.session_state.get('admin_target_socs', [])
-        for soc_info in target_socs:
-            if isinstance(soc_info, tuple) and len(soc_info) >= 2 and soc_info[0] == soc_code:
-                return soc_info[1]
-            elif isinstance(soc_info, dict) and soc_info.get("soc_code") == soc_code:
-                return soc_info.get("title", "Unknown")
-        return "Unknown"
     
     def start_auto_import(self):
         """Start the automatic import process."""
@@ -291,19 +400,37 @@ class AutoImportManager:
         self.is_running = True
         self.thread = threading.Thread(target=self.auto_import_loop, daemon=True)
         self.thread.start()
-        logger.info("Auto-import: Background import started")
+        logger.info("Auto-import: Started persistent background import")
     
     def stop_auto_import(self):
         """Stop the automatic import process."""
         self.is_running = False
-        logger.info("Auto-import: Background import stopped")
+        self.save_progress()
+        logger.info("Auto-import: Stopped background import")
     
     def auto_import_loop(self):
-        """Main loop for automatic importing."""
+        """Main loop for automatic importing with 24-hour pause on API limits."""
+        logger.info("Auto-import: Background loop started")
+        
         while self.is_running:
             try:
-                # Run every 10 minutes
-                time.sleep(600)
+                # Check if we've hit daily limits
+                if self.api_calls_today >= self.max_daily_calls:
+                    # Wait 24 hours before resuming
+                    logger.info(f"Auto-import: Daily limit reached ({self.api_calls_today}). Waiting 24 hours...")
+                    
+                    # Sleep in smaller chunks so we can check if stopped
+                    for _ in range(288):  # 24 hours in 5-minute chunks
+                        if not self.is_running:
+                            break
+                        time.sleep(300)  # 5 minutes
+                    
+                    # Reset for new day
+                    if self.is_running:
+                        self.api_calls_today = 0
+                        self.last_run_date = datetime.now().date().isoformat()
+                        self.save_progress()
+                        logger.info("Auto-import: 24 hours passed, resuming import")
                 
                 if not self.is_running:
                     break
@@ -311,25 +438,52 @@ class AutoImportManager:
                 # Process a batch
                 success = self.process_batch_automatically()
                 
-                if not success:
-                    # If no progress made, wait longer before trying again
-                    time.sleep(3600)  # Wait 1 hour
+                if success:
+                    # If successful, wait 10 minutes before next batch
+                    for _ in range(20):  # 10 minutes in 30-second chunks
+                        if not self.is_running:
+                            break
+                        time.sleep(30)
+                else:
+                    # If no progress (completed or error), wait 1 hour
+                    for _ in range(120):  # 1 hour in 30-second chunks
+                        if not self.is_running:
+                            break
+                        time.sleep(30)
                     
             except Exception as e:
                 logger.error(f"Auto-import loop error: {e}")
-                time.sleep(1800)  # Wait 30 minutes on error
+                # Wait 30 minutes on error
+                for _ in range(60):  # 30 minutes in 30-second chunks
+                    if not self.is_running:
+                        break
+                    time.sleep(30)
         
         logger.info("Auto-import: Background loop ended")
+    
+    def get_status(self):
+        """Get current status for display."""
+        total_socs = self.get_total_socs()
+        progress_pct = (self.processed_count / total_socs) if total_socs > 0 else 0
+        
+        return {
+            'is_running': self.is_running,
+            'processed_count': self.processed_count,
+            'total_socs': total_socs,
+            'progress_percentage': progress_pct,
+            'api_calls_today': self.api_calls_today,
+            'max_daily_calls': self.max_daily_calls,
+            'current_index': self.current_soc_index,
+            'failed_count': len(self.failed_socs),
+            'last_run_date': self.last_run_date
+        }
 
-# Initialize the auto-import manager  
-if 'auto_import_manager' not in st.session_state:
-    st.session_state.auto_import_manager = AutoImportManager()
+# Initialize the persistent auto-import manager  
+if 'persistent_auto_import_manager' not in st.session_state:
+    st.session_state.persistent_auto_import_manager = PersistentAutoImportManager()
 
-# ALWAYS start auto-import if database is available (not just for admins)
-if (database_available and bls_api_key and 
-    not st.session_state.auto_import_manager.is_running):
-    st.session_state.auto_import_manager.start_auto_import()
-    logger.info("Auto-import started automatically on app load")
+# The system starts automatically - no need for conditional startup
+auto_import_manager = st.session_state.persistent_auto_import_manager
 
 # --- Health Check Endpoints ---
 query_params = st.query_params
@@ -748,20 +902,28 @@ with st.sidebar:
 
     # Auto-Import Status for All Users
     st.markdown("### 🔄 Data Import Status") 
-    if 'auto_import_manager' in st.session_state:
-        if st.session_state.auto_import_manager.is_running:
-            st.success("🟢 Background data updates: ACTIVE")
-            st.info("The system is automatically importing the latest job data.")
+    
+    status = auto_import_manager.get_status()
+    
+    if status['is_running']:
+        st.success("🟢 Background data updates: ACTIVE")
+        st.info("The system is automatically importing BLS job data 24/7.")
+    else:
+        st.warning("🟡 Background data updates: STOPPED")
+        
+    # Show progress for all users
+    if status['total_socs'] > 0:
+        st.progress(
+            status['progress_percentage'], 
+            text=f"Database: {status['progress_percentage']:.1%} complete ({status['processed_count']:,} / {status['total_socs']:,} jobs)"
+        )
+        
+        # Show daily API usage
+        daily_pct = status['api_calls_today'] / status['max_daily_calls']
+        if daily_pct >= 1.0:
+            st.warning(f"⏳ Daily API limit reached. Will resume in 24 hours.")
         else:
-            st.warning("🟡 Background data updates: MONITORING")
-            
-        # Show basic progress without admin details
-        if st.session_state.admin_target_socs:
-            total_socs = len(st.session_state.admin_target_socs)
-            processed = st.session_state.get('admin_processed_count', 0)
-            if total_socs > 0:
-                pct = processed / total_socs
-                st.progress(pct, text=f"Database: {pct:.1%} complete")
+            st.info(f"📊 Today's API usage: {status['api_calls_today']}/{status['max_daily_calls']} ({daily_pct:.1%})")
     else:
         st.info("🔄 Data import system initializing...")
 
@@ -772,109 +934,105 @@ with st.sidebar:
     if check_admin_auth():
         with st.expander("⚙️ ADMIN CONTROLS - Authenticated User", expanded=True):
             st.success("🔓 You are logged in as an administrator")
-            st.markdown("### Automatic Database Population Status")
             
-            # Load current progress
-            total_processed = st.session_state.auto_import_manager.load_progress()
-            total_socs = len(st.session_state.admin_target_socs) if st.session_state.admin_target_socs else 0
+            status = auto_import_manager.get_status()
             
-            # Progress display
-            if total_socs > 0:
-                progress_pct = total_processed / total_socs
-                st.progress(progress_pct, text=f"Progress: {total_processed:,} / {total_socs:,} SOCs processed ({progress_pct:.1%})")
-            else:
-                st.info("Target SOCs list not loaded")
+            st.markdown("### 📊 Detailed Import Status")
             
-            # Status indicators
             col1, col2, col3 = st.columns(3)
             with col1:
-                if st.session_state.auto_import_manager.is_running:
+                if status['is_running']:
                     st.success("🟢 Auto-Import: ACTIVE")
                 else:
                     st.error("🔴 Auto-Import: STOPPED")
             
             with col2:
-                api_calls = st.session_state.auto_import_manager.api_calls_today
-                max_calls = st.session_state.auto_import_manager.max_daily_calls
-                if api_calls < max_calls:
-                    st.success(f"📊 API Calls: {api_calls}/{max_calls}")
+                if status['api_calls_today'] < status['max_daily_calls']:
+                    st.success(f"📊 API: {status['api_calls_today']}/{status['max_daily_calls']}")
                 else:
-                    st.warning(f"⚠️ Daily Limit Reached: {api_calls}/{max_calls}")
+                    st.warning(f"⚠️ Daily Limit: {status['api_calls_today']}/{status['max_daily_calls']}")
             
             with col3:
-                next_batch = st.session_state.auto_import_manager.get_next_batch_to_process()
-                remaining = len(next_batch) if next_batch else 0
+                remaining = status['total_socs'] - status['processed_count'] 
                 if remaining > 0:
-                    st.info(f"⏳ Next Batch: {remaining} SOCs")
+                    st.info(f"⏳ Remaining: {remaining:,} SOCs")
                 else:
-                    st.success("✅ All SOCs Processed!")
+                    st.success("✅ Import Complete!")
             
-            # Manual controls
-            st.markdown("### Manual Controls")
+            # Progress details
+            st.markdown("### 📈 Progress Details")
+            st.progress(
+                status['progress_percentage'], 
+                text=f"Overall Progress: {status['processed_count']:,} / {status['total_socs']:,} SOCs ({status['progress_percentage']:.1%})"
+            )
+            
+            st.write(f"**Current Index:** {status['current_index']:,}")
+            st.write(f"**Failed SOCs:** {status['failed_count']:,}")
+            st.write(f"**Last Active:** {status['last_run_date']}")
+            
+            # Control buttons
+            st.markdown("### 🎛️ Controls")
             col_btn1, col_btn2, col_btn3 = st.columns(3)
             
             with col_btn1:
-                if st.button("🚀 Force Process Batch", key="force_batch"):
+                if status['is_running']:
+                    if st.button("⏸️ Stop Import", key="stop_auto"):
+                        auto_import_manager.stop_auto_import()
+                        st.info("Import stopped")
+                        st.rerun()
+                else:
+                    if st.button("▶️ Start Import", key="start_auto"):
+                        auto_import_manager.start_auto_import()
+                        st.success("Import started")
+                        st.rerun()
+            
+            with col_btn2:
+                if st.button("🚀 Process Batch Now", key="force_batch"):
                     with st.spinner("Processing batch..."):
-                        success = st.session_state.auto_import_manager.process_batch_automatically()
+                        success = auto_import_manager.process_batch_automatically()
                         if success:
-                            st.success("Batch processed successfully!")
+                            st.success("Batch processed!")
                         else:
                             st.warning("No items to process or daily limit reached")
                         st.rerun()
             
-            with col_btn2:
-                if st.session_state.auto_import_manager.is_running:
-                    if st.button("⏸️ Stop Auto-Import", key="stop_auto"):
-                        st.session_state.auto_import_manager.stop_auto_import()
-                        st.info("Auto-import stopped")
-                        st.rerun()
-                else:
-                    if st.button("▶️ Start Auto-Import", key="start_auto"):
-                        st.session_state.auto_import_manager.start_auto_import()
-                        st.success("Auto-import started")
-                        st.rerun()
-            
             with col_btn3:
-                if st.button("📊 Refresh Stats", key="refresh_stats"):
+                if st.button("📊 Refresh Status", key="refresh_stats"):
                     st.rerun()
             
             # Settings
-            st.markdown("### Import Settings")
+            st.markdown("### ⚙️ Settings")
             col_set1, col_set2 = st.columns(2)
+            
             with col_set1:
-                new_batch_size = st.number_input("Batch Size", min_value=1, max_value=20, 
-                                               value=st.session_state.auto_import_manager.batch_size)
-                if new_batch_size != st.session_state.auto_import_manager.batch_size:
-                    st.session_state.auto_import_manager.batch_size = new_batch_size
+                new_batch_size = st.number_input(
+                    "Batch Size", 
+                    min_value=1, max_value=10, 
+                    value=auto_import_manager.batch_size,
+                    help="Number of SOCs to process in each batch"
+                )
+                if new_batch_size != auto_import_manager.batch_size:
+                    auto_import_manager.batch_size = new_batch_size
+                    auto_import_manager.save_settings()
             
             with col_set2:
-                new_delay = st.number_input("API Delay (seconds)", min_value=0.5, max_value=5.0, 
-                                          value=st.session_state.auto_import_manager.api_delay, step=0.1)
-                if new_delay != st.session_state.auto_import_manager.api_delay:
-                    st.session_state.auto_import_manager.api_delay = new_delay
+                new_delay = st.number_input(
+                    "API Delay (seconds)", 
+                    min_value=1.0, max_value=10.0, 
+                    value=auto_import_manager.api_delay, 
+                    step=0.5,
+                    help="Delay between API calls to respect rate limits"
+                )
+                if new_delay != auto_import_manager.api_delay:
+                    auto_import_manager.api_delay = new_delay
+                    auto_import_manager.save_settings()
             
-            # Recent activity log
-            if database_available:
-                st.markdown("### Recent Import Activity")
-                try:
-                    with db_engine.connect() as connection:
-                        recent_imports = connection.execute(text("""
-                            SELECT occupation_code, job_title, created_at 
-                            FROM bls_data 
-                            WHERE created_at >= NOW() - INTERVAL '24 hours'
-                            ORDER BY created_at DESC 
-                            LIMIT 10
-                        """)).fetchall()
-                        
-                        if recent_imports:
-                            for row in recent_imports:
-                                soc_code, job_title, created_at = row
-                                st.text(f"{created_at}: {soc_code} - {job_title}")
-                        else:
-                            st.info("No recent import activity in the last 24 hours")
-                except Exception as e:
-                    st.error(f"Error loading recent activity: {e}")
+            # Failed SOCs summary
+            if status['failed_count'] > 0:
+                st.markdown("### ❌ Failed SOCs")
+                if st.button("Show Failed SOCs"):
+                    failed_df = pd.DataFrame(auto_import_manager.failed_socs)
+                    st.dataframe(failed_df, use_container_width=True)
                     
             # Logout button
             st.markdown("---")
