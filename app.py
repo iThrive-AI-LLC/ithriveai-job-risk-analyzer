@@ -254,9 +254,12 @@ class PersistentAutoImportManager:
                 json.dump(progress_data, f, indent=2)
                 
             # Also update session state for UI
-            st.session_state.admin_processed_count = self.processed_count
-            st.session_state.admin_current_soc_index = self.current_soc_index
-            st.session_state.admin_failed_socs = self.failed_socs
+            if 'admin_processed_count' in st.session_state:
+                st.session_state.admin_processed_count = self.processed_count
+            if 'admin_current_soc_index' in st.session_state:
+                st.session_state.admin_current_soc_index = self.current_soc_index
+            if 'admin_failed_socs' in st.session_state:
+                st.session_state.admin_failed_socs = self.failed_socs
             
         except Exception as e:
             logger.error(f"Error saving progress: {e}")
@@ -636,29 +639,93 @@ with tabs[0]:
                 st.markdown(f"**Occupation Code:** {job_data.get('occupation_code', 'N/A')}")
                 st.markdown(f"**Job Category:** {job_data.get('job_category', 'General')}")
                 
-                emp_data = job_data.get('projections', {})
+                # Get employment data from various possible locations in the job_data structure
+                bls_data = job_data.get('bls_data', {})
+                emp_data = job_data.get('projections', bls_data)
+                
+                # Current Employment
                 current_emp = emp_data.get('current_employment')
-                st.markdown(f"**Current Employment:** {current_emp:,.0f} jobs" if isinstance(current_emp, (int, float)) else "Data unavailable")
+                if current_emp is None:
+                    current_emp = bls_data.get('employment')
+                if current_emp is None:
+                    current_emp = job_data.get('employment')
                 
+                if isinstance(current_emp, (int, float)):
+                    st.markdown(f"**Current Employment:** {current_emp:,.0f} jobs")
+                else:
+                    st.markdown("**Current Employment:** Not available")
+                
+                # Growth Rate
                 growth = emp_data.get('percent_change')
-                st.markdown(f"**BLS Projected Growth (2022-2032):** {growth:+.1f}%" if isinstance(growth, (int, float)) else "Data unavailable")
+                if growth is None:
+                    growth = bls_data.get('employment_change_percent')
+                if growth is None:
+                    growth = job_data.get('employment_change_percent')
                 
+                if isinstance(growth, (int, float)):
+                    st.markdown(f"**BLS Projected Growth (2022-2032):** {growth:+.1f}%")
+                else:
+                    st.markdown("**BLS Projected Growth (2022-2032):** Not available")
+                
+                # Job Openings
                 openings = emp_data.get('annual_job_openings')
-                st.markdown(f"**Annual Job Openings:** {openings:,.0f}" if isinstance(openings, (int, float)) else "Data unavailable")
+                if openings is None:
+                    openings = bls_data.get('annual_job_openings')
+                if openings is None:
+                    openings = job_data.get('annual_job_openings')
+                
+                if isinstance(openings, (int, float)):
+                    st.markdown(f"**Annual Job Openings:** {openings:,.0f}")
+                else:
+                    st.markdown("**Annual Job Openings:** Not available")
 
                 st.markdown("<h3 style='color: #0084FF; font-size: 20px; margin-top: 20px;'>Career Outlook</h3>", unsafe_allow_html=True)
                 st.markdown("<h4 style='color: #0084FF; font-size: 16px;'>Statistics</h4>", unsafe_allow_html=True)
                 
-                automation_prob = (job_data.get('year_5_risk', 45.0) + job_data.get('year_1_risk', 25.0)) / 2 # Simplified placeholder
-                st.markdown(f"**Task Automation Index (Est.):** {automation_prob:.1f}%")
+                # Calculate automation probability
+                year_1_risk = job_data.get('year_1_risk')
+                year_5_risk = job_data.get('year_5_risk')
                 
-                median_wage = job_data.get('wage_data', {}).get('median_wage')
-                st.markdown(f"**Median Annual Wage:** ${median_wage:,.0f}" if isinstance(median_wage, (int, float)) else "Data unavailable")
+                if year_1_risk is not None and year_5_risk is not None:
+                    automation_prob = (year_5_risk + year_1_risk) / 2
+                    st.markdown(f"**Task Automation Index (Est.):** {automation_prob:.1f}%")
+                else:
+                    risk_scores = job_data.get('risk_scores', {})
+                    year_1 = risk_scores.get('year_1')
+                    year_5 = risk_scores.get('year_5')
+                    
+                    if year_1 is not None and year_5 is not None:
+                        automation_prob = (year_5 + year_1) / 2
+                        st.markdown(f"**Task Automation Index (Est.):** {automation_prob:.1f}%")
+                    else:
+                        st.markdown("**Task Automation Index (Est.):** Not available")
+                
+                # Median Wage
+                wage_data = job_data.get('wage_data', {})
+                median_wage = wage_data.get('median_wage')
+                if median_wage is None:
+                    median_wage = bls_data.get('median_wage')
+                if median_wage is None:
+                    median_wage = job_data.get('median_wage')
+                
+                if isinstance(median_wage, (int, float)):
+                    st.markdown(f"**Median Annual Wage:** ${median_wage:,.0f}")
+                else:
+                    st.markdown("**Median Annual Wage:** Not available")
             
             with risk_gauge_col:
                 risk_category = job_data.get("risk_category", "Moderate")
-                year_1_risk = job_data.get("year_1_risk", 35.0)
-                year_5_risk = job_data.get("year_5_risk", 60.0)
+                
+                # Get risk values from various possible locations
+                year_1_risk = job_data.get("year_1_risk")
+                if year_1_risk is None:
+                    risk_scores = job_data.get('risk_scores', {})
+                    year_1_risk = risk_scores.get('year_1')
+                
+                year_5_risk = job_data.get("year_5_risk")
+                if year_5_risk is None:
+                    risk_scores = job_data.get('risk_scores', {})
+                    year_5_risk = risk_scores.get('year_5')
                 
                 st.markdown(f"<h3 style='text-align: center; margin-bottom: 10px;'>Overall AI Displacement Risk: {risk_category}</h3>", unsafe_allow_html=True)
                 
@@ -687,22 +754,39 @@ with tabs[0]:
                 col1_risk, col2_risk = st.columns(2)
                 with col1_risk:
                     st.markdown("<div style='text-align: center;'><h4 style='color: #0084FF; font-size: 18px;'>1-Year Risk</h4></div>", unsafe_allow_html=True)
-                    st.markdown(f"<div style='text-align: center; font-size: 20px; font-weight: bold;'>{year_1_risk if year_1_risk is not None else 0:.1f}%</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='text-align: center; font-size: 20px; font-weight: bold;'>{year_1_risk if year_1_risk is not None else 'N/A'}%</div>", unsafe_allow_html=True)
                 with col2_risk:
                     st.markdown("<div style='text-align: center;'><h4 style='color: #0084FF; font-size: 18px;'>5-Year Risk</h4></div>", unsafe_allow_html=True)
-                    st.markdown(f"<div style='text-align: center; font-size: 20px; font-weight: bold;'>{year_5_risk if year_5_risk is not None else 0:.1f}%</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div style='text-align: center; font-size: 20px; font-weight: bold;'>{year_5_risk if year_5_risk is not None else 'N/A'}%</div>", unsafe_allow_html=True)
             
             with risk_factors_col:
                 st.markdown("<h3 style='color: #0084FF; font-size: 20px;'>Key Risk Factors</h3>", unsafe_allow_html=True)
-                risk_factors = job_data.get("risk_factors", ["Data unavailable"])
-                for factor in risk_factors: st.markdown(f"❌ {factor}")
+                risk_factors = job_data.get("risk_factors", [])
+                if risk_factors:
+                    for factor in risk_factors: 
+                        st.markdown(f"❌ {factor}")
+                else:
+                    st.markdown("No specific risk factors identified")
                 
                 st.markdown("<h3 style='color: #0084FF; font-size: 20px; margin-top: 20px;'>Protective Factors</h3>", unsafe_allow_html=True)
-                protective_factors = job_data.get("protective_factors", ["Data unavailable"])
-                for factor in protective_factors: st.markdown(f"✅ {factor}")
+                protective_factors = job_data.get("protective_factors", [])
+                if protective_factors:
+                    for factor in protective_factors: 
+                        st.markdown(f"✅ {factor}")
+                else:
+                    st.markdown("No specific protective factors identified")
             
             st.markdown("<h3 style='color: #0084FF; font-size: 20px; margin-top: 20px;'>Key Insights</h3>", unsafe_allow_html=True)
-            st.markdown(job_data.get("analysis", "Detailed analysis not available for this job title."))
+            analysis = job_data.get("analysis")
+            if analysis:
+                st.markdown(analysis)
+            else:
+                summary = job_data.get("summary")
+                if summary:
+                    st.markdown(summary)
+                else:
+                    st.markdown("Detailed analysis not available for this job title.")
+            
             # Get skill data safely from job_comparison module
             import job_comparison
 
@@ -891,15 +975,6 @@ with st.sidebar:
     else:
         st.markdown("Keep-Alive: <span style='color:orange;font-weight:bold;'>Initializing...</span>", unsafe_allow_html=True)
 
-    st.markdown("***")
-    st.markdown("### UptimeRobot Setup")
-    st.markdown("To keep this application alive with UptimeRobot:")
-    st.markdown("1. Create a new monitor in UptimeRobot")
-    st.markdown("2. Set Type to \"HTTP(s)\"")
-    st.markdown("3. Set URL to your app URL with `?health=true` (e.g., `your-app-url.streamlit.app/?health=true`)")
-    st.markdown("4. Set monitoring interval to 5 minutes")
-    st.markdown("5. Enable \"Alert When Down\"")
-
     # Auto-Import Status for All Users
     st.markdown("### 🔄 Data Import Status") 
     
@@ -930,7 +1005,7 @@ with st.sidebar:
     if not bls_api_key:
         st.error("BLS API Key is not configured. Please set the BLS_API_KEY in Streamlit secrets or environment variables. The application cannot function without it.")
 
-    # Admin Controls - Protected Section
+    # Admin Controls - Protected Section - ONLY SHOW IF AUTHENTICATED
     if check_admin_auth():
         with st.expander("⚙️ ADMIN CONTROLS - Authenticated User", expanded=True):
             st.success("🔓 You are logged in as an administrator")
@@ -1044,6 +1119,9 @@ with st.sidebar:
         # Show minimal admin section for regular users  
         with st.expander("🔒 Admin Login", expanded=False):
             admin_login_form()
+            
+        # Link to dedicated admin page
+        st.markdown("For full admin controls, visit the [Admin Dashboard](/admin)")
 
 # --- Application Footer ---
 st.markdown("<hr style='margin-top: 40px; margin-bottom: 20px;'>", unsafe_allow_html=True)
